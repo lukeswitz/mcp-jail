@@ -52,14 +52,16 @@ sudo_if_needed() {
 }
 
 install_binary() {
-  local target ext tmp url sha_url
+  local target ext url sha_url
   target="$(detect_target)"
   ext="tar.gz"
   [[ "$target" == *windows* ]] && ext="zip"
   url="$(release_url "$target" "$ext")"
   sha_url="$url.sha256"
   tmp="$(mktemp -d)"
-  trap 'rm -rf "$tmp"' EXIT
+  # Trap cleanup. Script-level scope so `set -u` doesn't fire with an
+  # unbound $tmp when EXIT runs after install_binary returns.
+  trap 'rm -rf "${tmp:-}"' EXIT
 
   log "fetching $(basename "$url")"
   curl -fsSL "$url" -o "$tmp/pkg.$ext" || die "download failed: $url"
@@ -103,20 +105,27 @@ run_init() {
 
 offer_wrap() {
   have mcp-jail || return 0
-  log "scanning known MCP client configs"
-  mcp-jail wrap --dry-run || return 0
 
+  # Non-TTY path (curl|bash): the user invoked the installer; auto-apply.
+  # Opt out with MCP_JAIL_NO_WRAP=1.
   if [[ ! -t 0 ]]; then
-    echo
-    echo "(stdin not a TTY — run 'mcp-jail wrap' to apply, or 'mcp-jail unwrap' to revert)"
+    if [[ "${MCP_JAIL_NO_WRAP:-}" == "1" ]]; then
+      log "skipping wrap (MCP_JAIL_NO_WRAP=1). run 'mcp-jail wrap' to apply later."
+      return 0
+    fi
+    log "wrapping MCP client configs (backs up each file first)"
+    mcp-jail wrap --yes || warn "wrap returned non-zero"
     return 0
   fi
 
-  printf '\nApply this wrap plan now? [y/N] '
+  # TTY path: show plan, ask.
+  log "scanning known MCP client configs"
+  mcp-jail wrap --dry-run || return 0
+  printf '\nApply this wrap plan now? [Y/n] '
   local ans; read -r ans
-  case "$ans" in
-    y|Y|yes|YES) mcp-jail wrap --yes ;;
-    *) log "skipped. run 'mcp-jail wrap' any time to apply." ;;
+  case "${ans:-y}" in
+    n|N|no|NO) log "skipped. run 'mcp-jail wrap' any time to apply." ;;
+    *) mcp-jail wrap --yes ;;
   esac
 }
 

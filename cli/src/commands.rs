@@ -79,8 +79,6 @@ fn cmd_init(_a: InitArgs) -> Result<()> {
     paths.ensure()?;
     let _key = ensure_key(&paths)?;
     sandbox::ensure_helper().ok(); // non-fatal; warn only
-    // Install Python .pth activator into the active site-packages of `python3`.
-    install_python_pth().ok();
     println!("mcp-jail: initialized at {}", paths.root.display());
     println!("  key:     {}", paths.pubkey.display());
     println!("  allow:   {}", paths.allow.display());
@@ -569,24 +567,3 @@ fn exec_or_die(wrapped: &[String], env_subset: &[String]) -> Result<()> {
     std::process::exit(status.code().unwrap_or(1));
 }
 
-fn install_python_pth() -> Result<()> {
-    let out = std::process::Command::new("python3")
-        .args(["-c", "import site,sys; print(site.getusersitepackages())"])
-        .output()?;
-    if !out.status.success() {
-        return Err(anyhow!("python3 getusersitepackages failed"));
-    }
-    let dir = String::from_utf8_lossy(&out.stdout).trim().to_owned();
-    if dir.is_empty() {
-        return Err(anyhow!("empty usersite"));
-    }
-    std::fs::create_dir_all(&dir)?;
-    let pth = PathBuf::from(&dir).join("mcp_jail.pth");
-    std::fs::write(
-        &pth,
-        "import os; \
-         __import__('mcp_jail._activate') if os.environ.get('MCP_JAIL_DISABLE') != '1' else None\n",
-    )?;
-    println!("  wrote   {}", pth.display());
-    Ok(())
-}

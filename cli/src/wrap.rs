@@ -52,7 +52,10 @@ fn current_binary_path() -> String {
 }
 
 fn rewrap_entry(id: &str, entry: &mut Map<String, Value>, source_config: &str, bin: &str) -> bool {
-    if entry.get("command").and_then(Value::as_str) == Some(bin) {
+    // Idempotency: presence of the MARKER key is the only reliable signal
+    // that this entry is already wrapped. Binary-path comparison breaks
+    // when `mcp-jail` is moved or reinstalled to a different prefix.
+    if entry.contains_key(MARKER) {
         return false;
     }
     let orig_cmd = match entry.get("command").and_then(Value::as_str) {
