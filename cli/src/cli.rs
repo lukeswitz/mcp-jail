@@ -41,6 +41,13 @@ pub struct WrapArgs {
     /// Print what would change without modifying files.
     #[arg(long = "dry-run")]
     pub dry_run: bool,
+    /// Don't auto-approve existing servers; make the user approve each one
+    /// interactively on first spawn. Default is to trust what's already in
+    /// your config (you ran the installer; you own those entries), skip
+    /// servers with dangerous argv flags, and sign everything else with
+    /// the default sandbox profile.
+    #[arg(long = "no-auto-approve")]
+    pub no_auto_approve: bool,
 }
 
 #[derive(Parser)]

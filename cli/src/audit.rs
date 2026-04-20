@@ -1,4 +1,3 @@
-//! Append-only, hash-chained JSONL audit log.
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};

@@ -1,4 +1,3 @@
-//! Command dispatch for the `mcp-jail` CLI.
 
 use crate::audit;
 use crate::canonical::{find_dangerous_flag, hash_file, SpawnRequest};
@@ -36,7 +35,6 @@ pub fn dispatch(cmd: Command) -> Result<()> {
 fn cmd_wrap(a: WrapArgs, unwrapping: bool) -> Result<()> {
     let verb = if unwrapping { "unwrap" } else { "wrap" };
 
-    // 1. Scan. Never modifies anything on the first pass.
     let proposed = wrap::scan_and_apply(true, unwrapping)?;
     if proposed.is_empty() {
         if unwrapping {
@@ -54,7 +52,6 @@ fn cmd_wrap(a: WrapArgs, unwrapping: bool) -> Result<()> {
     let entry_word = if total == 1 { "entry" } else { "entries" };
     let file_word = if proposed.len() == 1 { "file" } else { "files" };
 
-    // 2. Show the plan in plain language.
     println!();
     if unwrapping {
         println!("mcp-jail found {total} wrapped {entry_word} across {} {file_word} it can restore:", proposed.len());
@@ -82,7 +79,6 @@ fn cmd_wrap(a: WrapArgs, unwrapping: bool) -> Result<()> {
         return Ok(());
     }
 
-    // 3. Confirm.
     if !a.yes {
         println!();
         let q = if unwrapping {
@@ -96,7 +92,6 @@ fn cmd_wrap(a: WrapArgs, unwrapping: bool) -> Result<()> {
         }
     }
 
-    // 4. Apply.
     let applied = wrap::scan_and_apply(false, unwrapping)?;
     println!();
     for c in &applied {
@@ -104,19 +99,83 @@ fn cmd_wrap(a: WrapArgs, unwrapping: bool) -> Result<()> {
         println!("  ✓ {} — {} {entry_label} {verb}ped", c.path.display(), c.touched);
     }
 
-    // 5. Summary.
-    println!();
     if unwrapping {
-        println!("Done. Your MCP clients spawn their servers directly again.");
-    } else {
-        println!("Done. Your MCP client configs are protected by mcp-jail.");
         println!();
-        println!("Next step: restart your MCP client (Claude Code, Cursor, Claude");
-        println!("Desktop, Windsurf, etc.). The first time each server launches,");
-        println!("mcp-jail will block it and print a line that starts with");
-        println!("  `mcp-jail approve …`");
-        println!("Run that line to approve the server once. After that it runs");
-        println!("sandboxed automatically.");
+        println!("Done. Your MCP clients spawn their servers directly again.");
+        return Ok(());
+    }
+
+    let mut auto_signed = 0usize;
+    let mut manual_needed: Vec<String> = Vec::new();
+    if !a.no_auto_approve {
+        let paths = Paths::default();
+        paths.ensure()?;
+        let key = ensure_key(&paths)?;
+        let mut allow = load_allow(&paths)?;
+        for change in &applied {
+            for w in &change.wrapped {
+                let mut argv = vec![w.command.clone()];
+                argv.extend(w.args.iter().cloned());
+                if let Some(flag) = find_dangerous_flag(&argv) {
+                    manual_needed.push(format!("{} (uses `{}`)", w.id, flag));
+                    continue;
+                }
+                let req = SpawnRequest {
+                    command: w.command.clone(),
+                    argv: argv.clone(),
+                    env: std::collections::BTreeMap::new(),
+                    cwd: String::new(),
+                    source_config: Some(w.source_config.clone()),
+                };
+                let fingerprint = req.fingerprint(&[]);
+                allow.entries.retain(|e| e.id != w.id);
+                let mut entry = AllowEntry {
+                    id: w.id.clone(),
+                    fingerprint,
+                    argv,
+                    command: w.command.clone(),
+                    cwd: String::new(),
+                    env_subset: Vec::new(),
+                    dangerous: false,
+                    source_config: Some(SourceConfig {
+                        path: w.source_config.clone(),
+                        hash: String::new(),
+                    }),
+                    sandbox: Sandbox::default(),
+                    signed_at: Utc::now(),
+                    signature: String::new(),
+                };
+                sign_entry(&key, &mut entry)?;
+                sandbox::write_profile(&paths.root, &entry)?;
+                allow.entries.push(entry);
+                auto_signed += 1;
+            }
+        }
+        save_allow(&paths, &allow)?;
+    }
+
+    println!();
+    println!("Done. Your MCP client configs are protected by mcp-jail.");
+    if auto_signed > 0 {
+        let word = if auto_signed == 1 { "server" } else { "servers" };
+        println!(
+            "Auto-approved {auto_signed} pre-existing {word} — they will just work\n\
+             when you restart your MCP client. No further action needed."
+        );
+    }
+    if !manual_needed.is_empty() {
+        println!();
+        println!("The following server(s) use interpreter-eval flags and were NOT");
+        println!("auto-approved — review the argv and approve manually if you trust them:");
+        for m in &manual_needed {
+            println!("  • {m}");
+        }
+        println!("Run `mcp-jail approve <fp> --id <name> --dangerous` to allow.");
+    }
+    if auto_signed == 0 && manual_needed.is_empty() {
+        println!();
+        println!("Restart your MCP client. The first time each server launches,");
+        println!("mcp-jail prints a `mcp-jail approve …` line — run it once.");
     }
     Ok(())
 }
@@ -139,7 +198,7 @@ fn cmd_init(_a: InitArgs) -> Result<()> {
     let paths = Paths::default();
     paths.ensure()?;
     let _key = ensure_key(&paths)?;
-    sandbox::ensure_helper().ok(); // non-fatal; warn only
+    sandbox::ensure_helper().ok();
     println!("mcp-jail: initialized at {}", paths.root.display());
     println!("  key:     {}", paths.pubkey.display());
     println!("  allow:   {}", paths.allow.display());
@@ -152,7 +211,6 @@ fn cmd_approve(a: ApproveArgs) -> Result<()> {
     paths.ensure()?;
     let key = ensure_key(&paths)?;
 
-    // Load the pending entry matching the fingerprint prefix.
     let fp = a
         .fingerprint
         .ok_or_else(|| anyhow!("provide a fingerprint prefix (>=6 hex chars)"))?;
@@ -162,7 +220,7 @@ fn cmd_approve(a: ApproveArgs) -> Result<()> {
     let pendings = load_pending(&paths)?;
     let pending = pendings
         .iter()
-        .rev() // latest first
+        .rev()
         .find(|p| p.fingerprint.starts_with(&fp))
         .cloned()
         .ok_or_else(|| anyhow!("no pending entry matching `{fp}`"))?;
@@ -179,8 +237,6 @@ fn cmd_approve(a: ApproveArgs) -> Result<()> {
         .id
         .unwrap_or_else(|| derive_id(&pending.request.argv, &pending.fingerprint));
 
-    // Env keys do not participate in the fingerprint unless the user opts
-    // in per-key with --env. Avoids volatile keys (TMPDIR, `_`) causing drift.
     let env_subset = a.env.clone();
 
     let source_config = match a.source_config.or(pending.request.source_config.clone()) {
@@ -345,10 +401,6 @@ fn cmd_verify() -> Result<()> {
     Ok(())
 }
 
-/// Stdin JSON: { "command": "...", "argv": [...], "env": {...}, "cwd": "..." }
-/// Stdout JSON: { "decision": "allow"|"deny", "reason": "...",
-///                "wrapped_argv": [...]|null,
-///                "env_allow": [...], "fingerprint": "..." }
 fn cmd_check() -> Result<()> {
     let paths = Paths::default();
     paths.ensure()?;
@@ -426,28 +478,35 @@ fn cmd_check() -> Result<()> {
 }
 
 fn evaluate<'a>(allow: &'a AllowList, req: &SpawnRequest) -> Result<&'a AllowEntry, String> {
+    let pubkey = load_pubkey().map_err(|e| format!("mcp-jail not initialized: {e}"))?;
     for entry in &allow.entries {
         let fp = req.fingerprint(&entry.env_subset);
         if fp != entry.fingerprint {
             continue;
         }
-        // Argv sanity — still runs on approved entries.
+        if verify_entry(&pubkey, entry).is_err() {
+            return Err(format!(
+                "entry `{}` has an invalid signature — tampered allow-list?",
+                entry.id
+            ));
+        }
         if !entry.dangerous {
             if let Some(flag) = find_dangerous_flag(&req.argv) {
                 return Err(JailError::DangerousFlag(flag).to_string());
             }
         }
-        // NOTE: we intentionally do NOT hash the source config file for
-        // enforcement. Family-3 attacks (prompt-injection rewrites config)
-        // work by mutating command/args, which already flips the argv
-        // fingerprint above. Hashing the whole config additionally trips on
-        // unrelated writes the client itself makes (Claude Code updates
-        // session state on its own JSON file) — false positives in the live
-        // deployment with no added defense. source_config remains in the
-        // entry for audit/intent.
         return Ok(entry);
     }
     Err(JailError::UnknownFingerprint(req.fingerprint_full()).to_string())
+}
+
+fn load_pubkey() -> Result<ed25519_dalek::VerifyingKey> {
+    let paths = Paths::default();
+    let hex_str = std::fs::read_to_string(&paths.pubkey)
+        .context("missing pubkey; run `mcp-jail init`")?;
+    let raw = hex::decode(hex_str.trim())?;
+    let arr: [u8; 32] = raw.as_slice().try_into().context("pubkey length")?;
+    Ok(ed25519_dalek::VerifyingKey::from_bytes(&arr)?)
 }
 
 fn derive_id(argv: &[String], fingerprint: &str) -> String {
@@ -595,8 +654,6 @@ fn exec_or_die(wrapped: &[String], env_subset: &[String]) -> Result<()> {
     let program = CString::new(std::ffi::OsStr::new(&wrapped[0]).as_bytes())
         .map_err(|_| anyhow!("program path has NUL"))?;
 
-    // SAFETY: pointer arrays live to the end of this frame; execve only
-    // returns on failure.
     unsafe {
         libc::execve(program.as_ptr(), argv_ptrs.as_ptr(), envp_ptrs.as_ptr());
     }
@@ -606,9 +663,6 @@ fn exec_or_die(wrapped: &[String], env_subset: &[String]) -> Result<()> {
 
 #[cfg(not(unix))]
 fn exec_or_die(wrapped: &[String], env_subset: &[String]) -> Result<()> {
-    // Windows has no execve analogue. Spawn the child, inherit stdio,
-    // wait, and propagate the exit code so the parent acts like the
-    // child replaced it (close enough for Claude Code's MCP spawn path).
     use std::collections::HashSet;
     let declared: HashSet<&str> = env_subset.iter().map(String::as_str).collect();
     let essentials = [

@@ -1,14 +1,5 @@
-//! Generate an OS-native sandbox profile for an approved entry, and build the
-//! argv vector that wraps the original command inside the sandbox.
-//!
-//! macOS   : `sandbox-exec -f <profile.sb> -- <command> <args...>`
-//! Linux   : `bwrap` with a computed arg list
-//! Windows : returns original argv; enforcement is via Job Object / restricted
-//!           token applied by the Node/Python interposer at CreateProcess time.
 
 use crate::store::{AllowEntry, Sandbox};
-// `anyhow` macro is only reached by platform-gated branches (macos/linux);
-// on other targets the import is unused but still required for those builds.
 #[allow(unused_imports)]
 use anyhow::{anyhow, Result};
 use std::path::{Path, PathBuf};
@@ -36,14 +27,12 @@ pub fn wrap_argv(profile: &Path, command: &str, argv: &[String]) -> Result<Vec<S
         profile.display().to_string(),
         command.to_owned(),
     ];
-    // argv[0] is the program; the child sees it as argv[0] naturally.
     out.extend(argv.iter().skip(1).cloned());
     Ok(out)
 }
 
 #[cfg(target_os = "linux")]
 pub fn wrap_argv(_profile: &Path, command: &str, argv: &[String]) -> Result<Vec<String>> {
-    // Minimal bwrap profile; caller passes full Sandbox via env.
     let mut out = vec![
         "bwrap".to_owned(),
         "--unshare-all".to_owned(),
@@ -80,8 +69,6 @@ pub fn wrap_argv(_profile: &Path, command: &str, argv: &[String]) -> Result<Vec<
 
 #[must_use]
 pub fn macos_profile(scope: &Sandbox) -> String {
-    // Default-allow reads (SIP binaries need dyld/shared cache access),
-    // default-deny writes and network. Secret denies layered on top.
     let mut s = String::new();
     s.push_str("(version 1)\n(allow default)\n");
 
@@ -91,9 +78,6 @@ pub fn macos_profile(scope: &Sandbox) -> String {
     s.push_str("(allow file-write* (subpath \"/dev\"))\n");
     s.push_str("(allow file-write-data file-read-data (literal \"/dev/null\") (literal \"/dev/zero\") (literal \"/dev/random\") (literal \"/dev/urandom\") (literal \"/dev/tty\") (literal \"/dev/dtracehelper\"))\n");
 
-    // Scoped grants come before secret denies so a later deny carves out
-    // (sandbox-exec is last-match-wins, so a grant on $HOME still honours
-    // the secret denies that follow).
     for p in &scope.fs_read {
         s.push_str(&format!("(allow file-read* (subpath \"{}\"))\n", escape_sb(p)));
     }
@@ -108,8 +92,6 @@ pub fn macos_profile(scope: &Sandbox) -> String {
         ));
     }
 
-    // HOME canonicalised so the profile matches sandbox-exec's view after
-    // macOS resolves /var -> /private/var.
     let home_raw = std::env::var("HOME").unwrap_or_else(|_| "/".to_owned());
     let home = std::fs::canonicalize(&home_raw)
         .map(|p| p.display().to_string())
@@ -117,20 +99,52 @@ pub fn macos_profile(scope: &Sandbox) -> String {
     for secret in [
         ".ssh",
         ".aws",
+        ".gcp",
+        ".azure",
         ".config/gh",
         ".config/gcloud",
+        ".config/op",
         ".netrc",
+        ".gnupg",
+        ".password-store",
+        ".docker",
+        ".kube",
+        ".npmrc",
+        ".pypirc",
+        ".cargo/credentials.toml",
+        ".cargo/credentials",
+        ".gemrc",
+        ".bash_history",
+        ".zsh_history",
+        ".psql_history",
+        ".mysql_history",
+        ".python_history",
+        ".node_repl_history",
         "Library/Keychains",
         "Library/Application Support/1Password",
+        "Library/Application Support/Bitwarden",
+        "Library/Application Support/Bitwarden-Desktop",
+        "Library/Application Support/com.apple.TCC",
         "Library/Cookies",
+        "Library/HTTPStorages",
+        "Library/Application Support/Google/Chrome",
+        "Library/Application Support/Firefox",
+        "Library/Application Support/BraveSoftware",
+        "Library/Application Support/Arc",
+        "Library/Safari",
+        "Library/Messages",
+        "Library/Mail",
+        "Library/Group Containers",
     ] {
         s.push_str(&format!(
             "(deny file-read* (subpath \"{}/{secret}\"))\n",
             escape_sb(&home),
         ));
     }
+    for abs in ["/etc/shadow", "/etc/gshadow", "/etc/sudoers", "/etc/ssh"] {
+        s.push_str(&format!("(deny file-read* (subpath \"{}\"))\n", escape_sb(abs)));
+    }
 
-    // Carve-outs inside secret dirs; emitted last so they win.
     for p in &scope.fs_read_secret {
         s.push_str(&format!("(allow file-read* (literal \"{}\"))\n", escape_sb(p)));
         s.push_str(&format!(
@@ -139,10 +153,6 @@ pub fn macos_profile(scope: &Sandbox) -> String {
         ));
     }
 
-    // macOS sandbox-exec can't per-host egress-scope (remote ip/tcp accept
-    // only `*` or `localhost` as host). scope.net is recorded faithfully
-    // but collapses to deny / localhost-only / all-outbound here. Proper
-    // per-host scoping is a Linux/bwrap + nftables feature (v1.1).
     s.push_str("(deny network*)\n");
     if !scope.net.is_empty() {
         let only_loopback = scope.net.iter().all(|d| is_loopback(d));
@@ -171,8 +181,6 @@ fn escape_sb(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
-/// Presence check for the helper. Returns error if missing so CLI can give a
-/// clear message instead of failing at spawn time.
 pub fn ensure_helper() -> Result<()> {
     #[cfg(target_os = "macos")]
     {

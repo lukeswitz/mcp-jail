@@ -1,8 +1,3 @@
-//! Canonicalize a spawn request into stable bytes, then SHA-256.
-//! Canonical form: JSON with lexical keys, command resolved to realpath,
-//! env filtered to the approved subset. `cwd` does NOT participate — the
-//! same server legitimately launches from different working directories
-//! depending on how the client was started.
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -67,14 +62,28 @@ fn resolve_command(cmd: &str) -> String {
 
 pub const DANGEROUS_FLAGS: &[&str] = &[
     "-c",
+    "-C",
     "--command",
     "-e",
+    "-E",
     "--eval",
+    "--exec",
     "/c",
     "/C",
     "-Command",
     "-EncodedCommand",
-    "--exec",
+    "-EncodedArguments",
+    "-m",
+    "--module",
+    "-r",
+    "--require",
+    "--import",
+    "-p",
+    "--print",
+    "--rcfile",
+    "--init-file",
+    "-f",
+    "--file",
 ];
 
 #[must_use]

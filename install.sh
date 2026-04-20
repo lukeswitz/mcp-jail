@@ -1,10 +1,4 @@
 #!/usr/bin/env bash
-# mcp-jail one-shot installer.
-#
-#   curl -fsSL https://raw.githubusercontent.com/lukeswitz/mcp-jail/main/install.sh | bash
-#
-# Detects OS/arch, downloads the signed release binary, verifies SHA-256,
-# runs `mcp-jail init`. Idempotent. Re-run to upgrade.
 
 set -euo pipefail
 
@@ -59,8 +53,6 @@ install_binary() {
   url="$(release_url "$target" "$ext")"
   sha_url="$url.sha256"
   tmp="$(mktemp -d)"
-  # Trap cleanup. Script-level scope so `set -u` doesn't fire with an
-  # unbound $tmp when EXIT runs after install_binary returns.
   trap 'rm -rf "${tmp:-}"' EXIT
 
   log "fetching $(basename "$url")"
@@ -109,9 +101,6 @@ offer_wrap() {
     return 0
   fi
 
-  # If we have a TTY, let `mcp-jail wrap` prompt the user directly. If not
-  # (curl | bash), try to re-open /dev/tty so we can still ask — falling
-  # back to auto-apply only if stdin is truly unreachable (some CI contexts).
   echo
   if [[ -t 0 ]]; then
     mcp-jail wrap
@@ -130,8 +119,6 @@ main() {
   export PATH="$BIN_DIR:$PATH"
   run_init
   offer_wrap
-  # `mcp-jail wrap` prints its own next-step instructions when it applies,
-  # so we don't print a second copy here.
 }
 
 main "$@"

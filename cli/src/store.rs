@@ -1,5 +1,3 @@
-//! Persistent state: allow.toml, pending.jsonl, key.ed25519.
-//! CLI is the only writer (exclusive flock); interposers take shared locks.
 
 use crate::canonical::{home, SpawnRequest};
 use anyhow::{Context, Result};
@@ -35,7 +33,6 @@ pub struct AllowEntry {
     #[serde(default)]
     pub sandbox: Sandbox,
     pub signed_at: DateTime<Utc>,
-    /// Ed25519 signature over the canonical entry bytes with this field cleared.
     pub signature: String,
 }
 
@@ -53,8 +50,6 @@ pub struct Sandbox {
     pub fs_read: Vec<String>,
     #[serde(default)]
     pub fs_write: Vec<String>,
-    /// Grants emitted after the built-in secret denies; carves a specific
-    /// file out of an otherwise-denied directory (e.g. ~/.ssh/mcp_ed25519).
     #[serde(default)]
     pub fs_read_secret: Vec<String>,
 }

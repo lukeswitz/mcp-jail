@@ -1,10 +1,3 @@
-//! Auto-wrap known MCP client configs so every `mcpServers.*` entry routes
-//! through `mcp-jail exec --id X --source-config P -- <orig argv>`.
-//!
-//! Walks a fixed list of well-known config paths, parses each as JSON,
-//! recursively finds every `mcpServers` object, and rewraps its entries.
-//! Preserves the original under `_mcp_jail_original`. Backs up each file
-//! it writes to with a timestamped `.bak-<unix>` sibling.
 
 use anyhow::{Context, Result};
 use serde_json::{Map, Value};
@@ -16,7 +9,6 @@ const MARKER: &str = "_mcp_jail_original";
 
 fn known_config_paths() -> Vec<PathBuf> {
     let h = home();
-    // `mut` is used by cfg-gated push() blocks on macOS/Windows below.
     #[allow(unused_mut)]
     let mut out = vec![
         h.join(".claude.json"),
@@ -52,9 +44,6 @@ fn current_binary_path() -> String {
 }
 
 fn rewrap_entry(id: &str, entry: &mut Map<String, Value>, source_config: &str, bin: &str) -> bool {
-    // Idempotency: presence of the MARKER key is the only reliable signal
-    // that this entry is already wrapped. Binary-path comparison breaks
-    // when `mcp-jail` is moved or reinstalled to a different prefix.
     if entry.contains_key(MARKER) {
         return false;
     }
@@ -108,6 +97,7 @@ fn walk_and_apply(
     source_config: &str,
     bin: &str,
     unwrapping: bool,
+    collect: &mut Vec<WrappedEntry>,
 ) -> usize {
     let mut changes = 0;
     match value {
@@ -116,24 +106,46 @@ fn walk_and_apply(
                 let ids: Vec<String> = servers.keys().cloned().collect();
                 for id in ids {
                     if let Some(Value::Object(entry)) = servers.get_mut(&id) {
-                        let applied = if unwrapping {
-                            unwrap_entry(entry)
+                        if unwrapping {
+                            if unwrap_entry(entry) {
+                                changes += 1;
+                            }
                         } else {
-                            rewrap_entry(&id, entry, source_config, bin)
-                        };
-                        if applied {
-                            changes += 1;
+                            let orig_cmd = entry
+                                .get("command")
+                                .and_then(Value::as_str)
+                                .map(str::to_owned);
+                            let orig_args: Vec<String> = entry
+                                .get("args")
+                                .and_then(Value::as_array)
+                                .map(|a| {
+                                    a.iter()
+                                        .filter_map(|v| v.as_str().map(str::to_owned))
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+                            if rewrap_entry(&id, entry, source_config, bin) {
+                                if let Some(cmd) = orig_cmd {
+                                    collect.push(WrappedEntry {
+                                        id: id.clone(),
+                                        command: cmd,
+                                        args: orig_args,
+                                        source_config: source_config.to_owned(),
+                                    });
+                                }
+                                changes += 1;
+                            }
                         }
                     }
                 }
             }
             for (_, v) in map.iter_mut() {
-                changes += walk_and_apply(v, source_config, bin, unwrapping);
+                changes += walk_and_apply(v, source_config, bin, unwrapping, collect);
             }
         }
         Value::Array(arr) => {
             for v in arr {
-                changes += walk_and_apply(v, source_config, bin, unwrapping);
+                changes += walk_and_apply(v, source_config, bin, unwrapping, collect);
             }
         }
         _ => {}
@@ -158,6 +170,14 @@ fn backup_path(path: &std::path::Path) -> PathBuf {
 pub struct Change {
     pub path: PathBuf,
     pub touched: usize,
+    pub wrapped: Vec<WrappedEntry>,
+}
+
+pub struct WrappedEntry {
+    pub id: String,
+    pub command: String,
+    pub args: Vec<String>,
+    pub source_config: String,
 }
 
 pub fn scan_and_apply(dry_run: bool, unwrapping: bool) -> Result<Vec<Change>> {
@@ -171,10 +191,11 @@ pub fn scan_and_apply(dry_run: bool, unwrapping: bool) -> Result<Vec<Change>> {
             .with_context(|| format!("read {}", cfg.display()))?;
         let mut doc: Value = match serde_json::from_str(&raw) {
             Ok(v) => v,
-            Err(_) => continue, // not our JSON
+            Err(_) => continue,
         };
         let source_config = cfg.display().to_string();
-        let touched = walk_and_apply(&mut doc, &source_config, &bin, unwrapping);
+        let mut wrapped = Vec::new();
+        let touched = walk_and_apply(&mut doc, &source_config, &bin, unwrapping, &mut wrapped);
         if touched == 0 {
             continue;
         }
@@ -183,10 +204,13 @@ pub fn scan_and_apply(dry_run: bool, unwrapping: bool) -> Result<Vec<Change>> {
             std::fs::copy(&cfg, &bak)
                 .with_context(|| format!("backup {}", cfg.display()))?;
             let serialized = serde_json::to_string_pretty(&doc)?;
-            std::fs::write(&cfg, serialized)
-                .with_context(|| format!("write {}", cfg.display()))?;
+            let tmp = cfg.with_extension("json.mcp-jail-tmp");
+            std::fs::write(&tmp, &serialized)
+                .with_context(|| format!("write {}", tmp.display()))?;
+            std::fs::rename(&tmp, &cfg)
+                .with_context(|| format!("atomic rename onto {}", cfg.display()))?;
         }
-        out.push(Change { path: cfg, touched });
+        out.push(Change { path: cfg, touched, wrapped });
     }
     Ok(out)
 }

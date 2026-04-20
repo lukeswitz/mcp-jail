@@ -60,29 +60,29 @@ Installer env overrides:
 
 ## How to use it
 
-Three steps. No JSON editing.
-
-**1.** Install (above).
-
-**2.** Start your MCP client. The first time each MCP server launches,
-mcp-jail blocks it and prints a fingerprint:
-
-```
-mcp-jail: blocked new server
-  id:           binary_ninja_mcp
-  argv:         /…/python3 /…/bridge.py
-  fingerprint:  8a1eec5348c1
-  hint:         mcp-jail approve 8a1eec5348c1
-```
-
-**3.** Approve it once:
+Run the installer. That's it.
 
 ```bash
-mcp-jail approve 8a1eec5348c1 --id binary_ninja_mcp
+curl -fsSL https://raw.githubusercontent.com/lukeswitz/mcp-jail/main/install.sh | bash
 ```
 
-That server runs sandboxed from then on. No further approvals unless
-the argv changes — which would be the exact attack we're blocking.
+The installer:
+
+1. Downloads the signed binary and verifies SHA-256.
+2. Finds every MCP server already in your client configs (Claude Code,
+   Claude Desktop, Cursor, Windsurf, Gemini CLI, Copilot).
+3. Shows you the plan, asks `Apply now? [y/N]`, backs up each file.
+4. **Auto-approves** the servers that were already there — you trusted
+   them when you added them to your config. Servers whose argv uses
+   interpreter-eval flags (`python -c`, `bash --rcfile`, etc.) are NOT
+   auto-approved; you review and approve those manually.
+5. Done. Restart your MCP client. Your existing servers run sandboxed
+   automatically. No further action.
+
+When a new server appears later — installed fresh, rewritten by a
+prompt-injected agent, pulled from a marketplace — mcp-jail blocks it
+on first launch and prints a one-liner: `mcp-jail approve <fp> --id <name>`.
+Copy-paste, done.
 
 <details>
 <summary>Scoping an approval (optional)</summary>

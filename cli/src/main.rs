@@ -1,4 +1,3 @@
-// Single `unsafe` use in cmd_exec for libc::execve (process-image replace).
 #![deny(unsafe_op_in_unsafe_fn)]
 
 mod audit;
