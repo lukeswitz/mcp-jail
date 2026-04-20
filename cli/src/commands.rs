@@ -346,12 +346,27 @@ fn trusted_sandbox_for(argv: &[String]) -> Sandbox {
             sb.net.push("*".into());
         }
     } else {
-        // Most local MCP bridges talk to their host app over loopback
-        // (python bridge → Binary Ninja localhost:PORT, etc.) — safest
-        // non-breaking default.
         sb.net.push("127.0.0.1".into());
     }
+    if is_ssh_command(argv) {
+        if let Ok(home) = std::env::var("HOME") {
+            for f in ["id_ed25519", "id_rsa", "id_ecdsa", "id_dsa", "config", "known_hosts"] {
+                sb.fs_read_secret.push(format!("{home}/.ssh/{f}"));
+            }
+        }
+    }
     sb
+}
+
+fn is_ssh_command(argv: &[String]) -> bool {
+    argv.first()
+        .map(|c| {
+            std::path::Path::new(c)
+                .file_name()
+                .map(|s| s.to_string_lossy().to_lowercase() == "ssh")
+                .unwrap_or(false)
+        })
+        .unwrap_or(false)
 }
 
 fn prompt_line(msg: &str, default: &str) -> String {

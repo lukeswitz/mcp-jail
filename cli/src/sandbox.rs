@@ -109,50 +109,15 @@ pub fn macos_profile(scope: &Sandbox) -> String {
     for secret in [
         ".ssh",
         ".aws",
-        ".gcp",
-        ".azure",
-        ".config/gh",
-        ".config/gcloud",
-        ".config/op",
         ".netrc",
-        ".gnupg",
-        ".password-store",
-        ".docker",
-        ".kube",
-        ".npmrc",
-        ".pypirc",
-        ".cargo/credentials.toml",
-        ".cargo/credentials",
-        ".gemrc",
-        ".bash_history",
-        ".zsh_history",
-        ".psql_history",
-        ".mysql_history",
-        ".python_history",
-        ".node_repl_history",
         "Library/Keychains",
         "Library/Application Support/1Password",
-        "Library/Application Support/Bitwarden",
-        "Library/Application Support/Bitwarden-Desktop",
-        "Library/Application Support/com.apple.TCC",
         "Library/Cookies",
-        "Library/HTTPStorages",
-        "Library/Application Support/Google/Chrome",
-        "Library/Application Support/Firefox",
-        "Library/Application Support/BraveSoftware",
-        "Library/Application Support/Arc",
-        "Library/Safari",
-        "Library/Messages",
-        "Library/Mail",
-        "Library/Group Containers",
     ] {
         s.push_str(&format!(
             "(deny file-read* (subpath \"{}/{secret}\"))\n",
             escape_sb(&home),
         ));
-    }
-    for abs in ["/etc/shadow", "/etc/gshadow", "/etc/sudoers", "/etc/ssh"] {
-        s.push_str(&format!("(deny file-read* (subpath \"{}\"))\n", escape_sb(abs)));
     }
 
     for p in &scope.fs_read_secret {
