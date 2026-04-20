@@ -3,10 +3,9 @@
 [![ci](https://github.com/lukeswitz/mcp-jail/actions/workflows/ci.yml/badge.svg)](https://github.com/lukeswitz/mcp-jail/actions/workflows/ci.yml) [![release](https://github.com/lukeswitz/mcp-jail/actions/workflows/release.yml/badge.svg)](https://github.com/lukeswitz/mcp-jail/actions/workflows/release.yml) [![Pre-release](https://img.shields.io/github/v/release/lukeswitz/mcp-jail?include_prereleases&label=pre-release&color=orange)](https://github.com/lukeswitz/mcp-jail/releases) [![GitHub code size in bytes](https://img.shields.io/github/languages/code-size/lukeswitz/mcp-jail)](https://github.com/lukeswitz/mcp-jail/tree/main/mcp-jail/)
 </div>
 
-> One static binary. Blocks the MCP STDIO RCE class disclosed by OX
-> Security in April 2026 (10 CVEs, 150M+ SDK downloads, 200K+ public
-> servers). Works with Claude Code, Claude Desktop, Cursor, Windsurf,
-> Gemini CLI, and any other MCP client.
+> Blocks the MCP STDIO RCE class disclosed by OX Security in April 2026.
+
+Works with Claude Code, Claude Desktop, Cursor, Windsurf, Gemini CLI, and any other MCP client.
 
 ## The attack
 
@@ -15,7 +14,9 @@ spawns it as a subprocess. Validation happens *after* the process has
 already run. If an attacker controls the config — via prompt injection,
 a malicious marketplace entry, or a vulnerable web app that accepts
 user-supplied MCP configs — they have arbitrary code execution on your
-machine. Anthropic marked the behaviour "expected" and declined to patch.
+machine. 
+
+Anthropic marked the behavior "expected" and declined to patch.
 
 ## The fix
 
@@ -114,16 +115,19 @@ mcp-jail approve <fp> --id my-server \
 <summary>All commands</summary>
 
 ```
-mcp-jail init               generate key, bootstrap state
-mcp-jail wrap               auto-rewrite MCP entries in known client configs
-mcp-jail unwrap             revert wrapping, restore originals
-mcp-jail list               approved + pending
-mcp-jail approve <fp>       sign a pending fingerprint
-mcp-jail revoke <id>        remove an approval
-mcp-jail logs               audit log, hash-chain verified
-mcp-jail verify             signatures + chain + sandbox helper self-check
-mcp-jail exec -- <argv>     the subcommand wrap uses under the hood
-mcp-jail upgrade            re-run the installer
+init     Generate signing key and initialize the allow-list (run once after install)
+  wrap     Scan your MCP client configs and route every server through mcp-jail
+  unwrap   Undo `wrap` — restore original MCP client configs
+  approve  Approve a blocked server by its fingerprint
+  list     Show approved servers and pending fingerprints awaiting approval
+  revoke   Remove an approval
+  logs     Show the audit log (every allow/deny decision)
+  verify   Self-check: key present, signatures valid, sandbox helper available
+  upgrade  Re-run the install script to upgrade mcp-jail
+  doctor   Health check: binary, state dir, key, signatures, sandbox helper, config wrap coverage, pending approvals, latest-version check
+  exec     Run a command under mcp-jail (used by wrapped configs; you don't run this yourself)
+  help     Print this message or the help of the given subcommand(s)
+
 ```
 
 Kill switch: `MCP_JAIL_DISABLE=1` — honoured by future in-process hook
