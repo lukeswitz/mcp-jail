@@ -16,9 +16,9 @@ a malicious marketplace entry, or a vulnerable web app that accepts
 user-supplied MCP configs — they have arbitrary code execution on your
 machine. 
 
-Anthropic marked the behavior "expected" and declined to patch.
+**Anthropic marked the behavior "expected" and declined to patch.**
 
-## The fix
+## The "fix"
 
 Install `mcp-jail`. It rewrites every MCP entry in your client configs
 to route through itself. Before any spawn:
@@ -148,7 +148,7 @@ extensions; does not affect the config-wrap enforcement path.
 
 ---
 
-## OX CVE coverage — all 10 blocked
+## OX CVE coverage 
 
 Every CVE terminates at the same sink: a process spawn from an
 attacker-supplied `{command, args}`. `mcp-jail`'s config wrap puts the
