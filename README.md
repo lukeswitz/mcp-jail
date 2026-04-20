@@ -261,7 +261,7 @@ of their respective owners.
 
 ## License
 
-Apache-2.0 — see [LICENSE](LICENSE).
+[LICENSE](LICENSE).
 
 ## References
 
