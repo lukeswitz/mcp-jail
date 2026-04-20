@@ -96,6 +96,16 @@ pub fn macos_profile(scope: &Sandbox) -> String {
     let home = std::fs::canonicalize(&home_raw)
         .map(|p| p.display().to_string())
         .unwrap_or(home_raw);
+
+    s.push_str(&format!(
+        "(deny file-write* (subpath \"{}/.mcp-jail\"))\n",
+        escape_sb(&home),
+    ));
+    s.push_str(&format!(
+        "(deny file-read* (literal \"{}/.mcp-jail/key.ed25519\"))\n",
+        escape_sb(&home),
+    ));
+
     for secret in [
         ".ssh",
         ".aws",
