@@ -148,38 +148,60 @@ extensions; does not affect the config-wrap enforcement path.
 
 ---
 
-## OX CVE coverage — all 10 blocked
+## OX CVE class — sink-level defense
 
-Every CVE terminates at the same sink: a process spawn from an
-attacker-supplied `{command, args}`. `mcp-jail`'s config wrap puts the
-guard between the client and the OS for every such spawn.
+All 10 OX CVEs are the same vulnerability class with different entry
+points. Nine (LiteLLM, Agent Zero, Upsonic, Langchain-Chatchat, Fay,
+Bisheng/Jaaz, GPT Researcher, DocsGPT, Flowise) are "vulnerable product
+API writes attacker-controlled `{command, args}` JSON, MCP client
+execve's it." Windsurf (CVE-2026-30615) is the mutation variant — client
+config is rewritten between approval and spawn. Every one terminates at
+the same spawn sink.
+
+`mcp-jail` guards that sink: fingerprint + sandbox between the client
+and the OS. A refused sink means the whole class is refused, independent
+of which product's API was the entry point.
+
+**Scope note (honest).** OX has not published per-CVE PoC payloads; the
+public advisories describe the class generically. The sweep here does
+NOT reproduce each CVE's exploit at its vulnerable product endpoint —
+that would require standing up each product (LiteLLM, Flowise, etc.)
+and running a per-product HTTP exploit. Instead it tests the guard at
+the shared sink with a deliberately varied set of attacker argv shapes
+(interpreter-eval via node/python/perl/ruby, plain-binary invocation,
+and argv mutation of an approved entry). End-to-end per-product repros
+are tracked as follow-up work.
 
 Harness: [`tests/cve-repro/sweep.sh`](tests/cve-repro/sweep.sh).
 
-| OX CVE | Product | Unguarded | Guarded |
-|---|---|---|---|
-| 2026-30623 | LiteLLM | RCE | **blocked** |
-| 2026-30624 | Agent Zero | RCE | **blocked** |
-| 2026-30625 | Upsonic | RCE | **blocked** |
-| 2026-30617 | Langchain-Chatchat | RCE | **blocked** |
-| 2026-30618 | Fay Framework | RCE | **blocked** |
-| 2026-33224 | Bisheng / Jaaz | RCE | **blocked** |
-| 2025-65720 | GPT Researcher | RCE | **blocked** |
-| 2026-26015 | DocsGPT | RCE | **blocked** |
-| 2026-40933 | Flowise | RCE | **blocked** |
-| 2026-30615 | Windsurf (family 3) | RCE via config mutation | **blocked** (mutated argv fails fingerprint match) |
+| OX CVE | Product | Delivery (OX family) | Attacker argv shape exercised | Unguarded | Guarded |
+|---|---|---|---|---|---|
+| 2026-30623 | LiteLLM            | 1 (vuln API) | `node -e …`     | RCE-CONFIRMED | blocked (unknown fingerprint, exit 126) |
+| 2026-30624 | Agent Zero         | 1 (vuln API) | `python3 -c …`  | RCE-CONFIRMED | blocked |
+| 2026-30625 | Upsonic            | 1 (vuln API) | plain binary `tee` | RCE-CONFIRMED | blocked |
+| 2026-30617 | Langchain-Chatchat | 1 (vuln API) | `perl -e …`     | RCE-CONFIRMED | blocked |
+| 2026-30618 | Fay Framework      | 1 (vuln API) | plain binary `cp` | RCE-CONFIRMED | blocked |
+| 2026-33224 | Bisheng / Jaaz     | 1 (vuln API) | `ruby -e …`     | RCE-CONFIRMED | blocked |
+| 2025-65720 | GPT Researcher     | 1 (vuln API) | plain binary `ln -s` | RCE-CONFIRMED | blocked |
+| 2026-26015 | DocsGPT            | 1 (vuln API) | plain binary `touch` | RCE-CONFIRMED | blocked |
+| 2026-40933 | Flowise            | 1 (vuln API) | `awk BEGIN{…}`  | RCE-CONFIRMED | blocked |
+| 2026-30615 | Windsurf           | 3 (config mutation) | approved argv, one arg mutated | mutation applies | blocked (fingerprint mismatch) |
+
+Secondary defense (OX family 2): `mcp-jail approve` refuses to sign an
+argv containing `-c`/`-e`/`--eval`/etc. without `--dangerous`. The sweep
+exercises this path and requires the refusal.
 
 <details>
 <summary>Run the sweep yourself</summary>
 
 ```bash
-tests/cve-repro/sweep.sh --unguarded     # 9/9 RCE markers created
-tests/cve-repro/sweep.sh                  # 9/9 blocked
+tests/cve-repro/sweep.sh --unguarded-only   # confirms the 9 attacker argvs are live RCE vectors
+tests/cve-repro/sweep.sh                     # full: baseline + guarded, expects 10/10 blocked
 ```
 
-Family 3 (Windsurf — config mutation between approval and spawn) is
-covered by the same mechanism: any mutation to `command` or `args`
-produces a new argv whose fingerprint has no signed entry.
+Per-product end-to-end repros (stand up each vulnerable product in a
+container, POST the attacker JSON to its vuln endpoint, confirm mcp-jail
+blocks the downstream spawn) are tracked as a follow-up.
 
 </details>
 
