@@ -336,7 +336,7 @@ than a public issue. If you reproduce an OX CVE that `mcp-jail`
 > MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT.
 > IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
 > CLAIM, DAMAGES, OR OTHER LIABILITY ARISING FROM THE USE OF THIS
-> SOFTWARE. See [LICENSE](LICENSE) for the full terms.
+> SOFTWARE.
 
 **Security tool limitations — please read:**
 
@@ -366,7 +366,7 @@ property of their respective owners.
 
 ## License
 
-Apache License 2.0 — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE).
 
 ## References
 
