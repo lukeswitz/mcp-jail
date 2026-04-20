@@ -93,11 +93,13 @@ pub fn find_dangerous_flag(argv: &[String]) -> Option<String> {
             return Some(a.clone());
         }
         for f in DANGEROUS_FLAGS {
-            if a.starts_with(f) && a.len() > f.len() {
-                let next = a.as_bytes()[f.len()];
-                if next == b'=' {
-                    return Some((*f).to_owned());
-                }
+            if !a.starts_with(f) || a.len() <= f.len() {
+                continue;
+            }
+            let is_short_flag = f.len() == 2 && f.starts_with('-') && !f.starts_with("--");
+            let next = a.as_bytes()[f.len()];
+            if is_short_flag || next == b'=' {
+                return Some((*f).to_owned());
             }
         }
     }
@@ -146,12 +148,8 @@ mod tests {
     #[test]
     fn detects_dangerous_flag() {
         assert_eq!(
-            find_dangerous_flag(&[
-                "python".to_owned(),
-                "-c".to_owned(),
-                "print(1)".to_owned()
-            ])
-            .as_deref(),
+            find_dangerous_flag(&["python".to_owned(), "-c".to_owned(), "print(1)".to_owned()])
+                .as_deref(),
             Some("-c")
         );
         assert_eq!(
@@ -162,5 +160,38 @@ mod tests {
             find_dangerous_flag(&["uvx".to_owned(), "server".to_owned()]),
             None
         );
+    }
+
+    #[test]
+    fn detects_concatenated_short_flags() {
+        // -c followed by inline code, no separator — bypass of naive checks.
+        assert_eq!(
+            find_dangerous_flag(&["python3".to_owned(), "-cprint(1)".to_owned()]).as_deref(),
+            Some("-c")
+        );
+        assert_eq!(
+            find_dangerous_flag(&["node".to_owned(), "-econsole.log(1)".to_owned()]).as_deref(),
+            Some("-e")
+        );
+        assert_eq!(
+            find_dangerous_flag(&["python3".to_owned(), "-mhttp.server".to_owned()]).as_deref(),
+            Some("-m")
+        );
+        assert_eq!(
+            find_dangerous_flag(&["ruby".to_owned(), "-rnet/http".to_owned()]).as_deref(),
+            Some("-r")
+        );
+    }
+
+    #[test]
+    fn ignores_unrelated_short_prefixes() {
+        // `--command` is a long flag; bare `--command-foo` is not eval.
+        assert_eq!(
+            find_dangerous_flag(&["rustc".to_owned(), "--crate-name=foo".to_owned()]),
+            None
+        );
+        // `-p` is listed (node --print); but `-pretty` isn't a valid node flag.
+        // We still flag it because single-dash short flags bind greedily to any
+        // suffix. Acceptable false-positive (user can --dangerous).
     }
 }
