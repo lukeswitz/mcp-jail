@@ -7,6 +7,9 @@
 //!           token applied by the Node/Python interposer at CreateProcess time.
 
 use crate::store::{AllowEntry, Sandbox};
+// `anyhow` macro is only reached by platform-gated branches (macos/linux);
+// on other targets the import is unused but still required for those builds.
+#[allow(unused_imports)]
 use anyhow::{anyhow, Result};
 use std::path::{Path, PathBuf};
 
@@ -40,7 +43,6 @@ pub fn wrap_argv(profile: &Path, command: &str, argv: &[String]) -> Result<Vec<S
 
 #[cfg(target_os = "linux")]
 pub fn wrap_argv(_profile: &Path, command: &str, argv: &[String]) -> Result<Vec<String>> {
-    use crate::store::Sandbox;
     // Minimal bwrap profile; caller passes full Sandbox via env.
     let mut out = vec![
         "bwrap".to_owned(),

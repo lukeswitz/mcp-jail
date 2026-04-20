@@ -16,6 +16,8 @@ const MARKER: &str = "_mcp_jail_original";
 
 fn known_config_paths() -> Vec<PathBuf> {
     let h = home();
+    // `mut` is used by cfg-gated push() blocks on macOS/Windows below.
+    #[allow(unused_mut)]
     let mut out = vec![
         h.join(".claude.json"),
         h.join(".cursor").join("mcp.json"),
