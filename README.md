@@ -33,7 +33,7 @@ binary, installs the Python + Node interposers if those runtimes are
 present, runs `mcp-jail init`.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mcp-jail/mcp-jail/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/lukeswitz/mcp-jail/main/install.sh | bash
 ```
 
 Re-run the same command any time to upgrade. Or from the CLI:
@@ -76,7 +76,7 @@ Three steps. None involve hand-editing JSON.
 
 **1. Install.**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mcp-jail/mcp-jail/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/lukeswitz/mcp-jail/main/install.sh | bash
 ```
 The installer also scans your MCP client configs (Claude Code, Claude
 Desktop, Cursor, Windsurf, Gemini CLI, Copilot) and offers to wrap every
@@ -336,7 +336,7 @@ than a public issue. If you reproduce an OX CVE that `mcp-jail`
 > MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT.
 > IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
 > CLAIM, DAMAGES, OR OTHER LIABILITY ARISING FROM THE USE OF THIS
-> SOFTWARE. See [LICENSE](LICENSE) for the full terms.
+> SOFTWARE.
 
 **Security tool limitations — please read:**
 
