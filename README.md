@@ -72,12 +72,19 @@ The installer:
 2. Finds every MCP server already in your client configs (Claude Code,
    Claude Desktop, Cursor, Windsurf, Gemini CLI, Copilot).
 3. Shows you the plan, asks `Apply now? [y/N]`, backs up each file.
-4. **Auto-approves** the servers that were already there — you trusted
-   them when you added them to your config. Servers whose argv uses
-   interpreter-eval flags (`python -c`, `bash --rcfile`, etc.) are NOT
-   auto-approved; you review and approve those manually.
-5. Done. Restart your MCP client. Your existing servers run sandboxed
+4. Interactively configures each server's sandbox, one prompt per entry,
+   with smart defaults: loopback-only for local bridges, host-restricted
+   for SSH/curl/etc. (detected host pre-filled), block otherwise. Enter
+   through the prompt accepts the defaults. Servers with interpreter-eval
+   flags (`python -c`, `bash --rcfile`, etc.) are flagged for manual
+   review — they skip auto-approval.
+5. Done. Restart your MCP client. Existing servers run sandboxed
    automatically. No further action.
+
+Non-interactive flags for scripts:
+- `mcp-jail wrap --yes` — accept all defaults silently
+- `mcp-jail wrap --yes --strict` — lock everything to deny-everywhere
+- `mcp-jail wrap --no-auto-approve` — approve each on first spawn instead
 
 When a new server appears later — installed fresh, rewritten by a
 prompt-injected agent, pulled from a marketplace — mcp-jail blocks it
@@ -87,9 +94,12 @@ Copy-paste, done.
 <details>
 <summary>Scoping an approval (optional)</summary>
 
-By default the sandbox denies writes, denies network, and blocks reads
-of `~/.ssh`, `~/.aws`, Keychain, browser cookies. Grant more only if a
-server needs it:
+By default the sandbox denies writes (except `/tmp`, `/var/folders`),
+scopes network per-server (loopback / host-restricted / all / block),
+and blocks reads of **your operator credentials only** — `~/.ssh`,
+`~/.aws`, `~/.gcp`, `~/.azure`, Keychain, browser cookies, etc. Target
+data stored under `~/targets`, `~/loot`, or anywhere outside those
+specific dirs stays readable. Grant more only if a server needs it:
 
 ```bash
 mcp-jail approve <fp> --id my-server \
@@ -114,17 +124,21 @@ mcp-jail approve <fp> --id my-server \
 <summary>All commands</summary>
 
 ```
-mcp-jail init               generate key, bootstrap state
-mcp-jail wrap               auto-rewrite MCP entries in known client configs
-mcp-jail unwrap             revert wrapping, restore originals
-mcp-jail list               approved + pending
-mcp-jail approve <fp>       sign a pending fingerprint
-mcp-jail revoke <id>        remove an approval
-mcp-jail logs               audit log, hash-chain verified
-mcp-jail verify             signatures + chain + sandbox helper self-check
-mcp-jail exec -- <argv>     the subcommand wrap uses under the hood
-mcp-jail upgrade            re-run the installer
+mcp-jail init                 generate key, bootstrap state
+mcp-jail wrap [--yes|--strict]  rewrite MCP entries + configure per-server sandbox
+mcp-jail unwrap               revert wrapping, restore originals
+mcp-jail list                 approved + pending (auto-prunes stale pending rows)
+mcp-jail approve <fp>         sign a pending fingerprint
+mcp-jail revoke <id>          remove an approval
+mcp-jail logs                 audit log, hash-chain verified
+mcp-jail verify               signatures + chain + sandbox helper self-check
+mcp-jail doctor               full health check: state, sigs, wrap coverage,
+                              pending, PATH shadowing, update availability
+mcp-jail upgrade              re-run the installer
 ```
+
+`mcp-jail exec` is the internal subcommand wrapped configs invoke — it
+is hidden from `--help` because you never run it directly.
 
 Kill switch: `MCP_JAIL_DISABLE=1` — honoured by future in-process hook
 extensions; does not affect the config-wrap enforcement path.
@@ -205,9 +219,11 @@ If MCP ever ships a v2 STDIO with signed manifests, this tool becomes
 obsolete — the correct long-term outcome.
 
 **What about servers you already approved turning malicious?** The
-sandbox bounds the damage (no `~/.ssh`, `~/.aws`, Keychain; default-deny
-network; write-scoped). It does not eliminate it. Audit log gives you
-forensics.
+sandbox bounds the damage — operator-credential dirs (`~/.ssh`, `~/.aws`,
+Keychain, etc.) are blocked, network scope is whatever you granted at
+wrap time (default loopback for local bridges, host-restricted for SSH),
+writes are scoped to `/tmp`. It does not eliminate the damage. Audit
+log gives you forensics.
 
 **macOS per-host egress scoping?** `sandbox-exec` can't express it —
 `remote ip/tcp` accept only `*` or `localhost` for host. `--net`
@@ -238,7 +254,7 @@ that's a valid report.
 
 - Defence-in-depth against a specific class of MCP STDIO RCE, not a comprehensive security solution. Does not replace OS hardening, code review of servers you install, or keeping upstream software patched.
 - The sandbox bounds blast radius; it cannot prevent abuse by a server you have consciously approved and granted broad scopes to. Read the argv before signing.
-- Default-deny of `~/.ssh`, `~/.aws`, Keychain, and network is a *heuristic* list. Add your own secret paths if you store credentials elsewhere.
+- The operator-credential deny list (`~/.ssh`, `~/.aws`, Keychain, etc.) is a *heuristic* — scoped to your local host only, not to target data. Add paths if you store credentials elsewhere; override a specific denied file with `--fs-read-secret` when an MCP genuinely needs it.
 - v0.1, no independent security audit. Do not rely on it alone for production or high-value systems.
 - CVEs attributed to OX Security's public disclosure. Reproduction scripts exercise the vulnerable sink, not every code path of every vulnerable app.
 - **Authorised use only.** The sandbox does not make offensive actions legal. If you wrap an MCP server that scans, exploits, or acts against systems, you are responsible for having written authorisation from the system owner.
