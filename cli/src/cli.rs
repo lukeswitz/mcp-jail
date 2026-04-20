@@ -9,38 +9,28 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
-    /// Initialize ~/.mcp-jail, generate key, install Python .pth activator.
+    /// Generate signing key and initialize the allow-list (run once after install).
     Init(InitArgs),
-    /// Interactively approve a pending fingerprint (or a fresh argv).
-    Approve(ApproveArgs),
-    /// Show approved servers + recent pending blocks.
-    List,
-    /// Remove an approved entry.
-    Revoke(RevokeArgs),
-    /// Inspect audit log with hash-chain verification.
-    Logs(LogsArgs),
-    /// Self-check: keys, activators, hooks present.
-    Verify,
-    /// INTERNAL: evaluate a spawn request; returns JSON decision on stdout.
-    /// Used by language interposers. Reads the canonical request on stdin.
-    Check,
-    /// Evaluate, sandbox-wrap, and `execv` the given argv. The preferred way
-    /// to guard an MCP client: rewrite each config entry from
-    ///   {"command": "uvx", "args": ["some-server"]}
-    /// to
-    ///   {"command": "mcp-jail",
-    ///    "args": ["exec", "--id", "some-server", "--", "uvx", "some-server"]}
-    /// Works with any client regardless of language or inheritance model.
-    Exec(ExecArgs),
-    /// Re-run the install script to upgrade binary, Python, and Node packages.
-    /// Equivalent to: curl -fsSL https://raw.githubusercontent.com/lukeswitz/mcp-jail/main/install.sh | bash
-    Upgrade,
-    /// Scan known MCP client configs and rewrite every entry to route
-    /// through `mcp-jail exec`. Backs up each file it modifies.
+    /// Scan your MCP client configs and route every server through mcp-jail.
     Wrap(WrapArgs),
-    /// Remove mcp-jail wrapping from known MCP client configs, restoring
-    /// the original `command`/`args`. Useful for full uninstall.
+    /// Undo `wrap` — restore original MCP client configs.
     Unwrap(WrapArgs),
+    /// Approve a blocked server by its fingerprint.
+    Approve(ApproveArgs),
+    /// Show approved servers and pending fingerprints awaiting approval.
+    List,
+    /// Remove an approval.
+    Revoke(RevokeArgs),
+    /// Show the audit log (every allow/deny decision).
+    Logs(LogsArgs),
+    /// Self-check: key present, signatures valid, sandbox helper available.
+    Verify,
+    /// Re-run the install script to upgrade mcp-jail.
+    Upgrade,
+    /// Run a command under mcp-jail (used by wrapped configs; you don't run this yourself).
+    Exec(ExecArgs),
+    #[command(hide = true)]
+    Check,
 }
 
 #[derive(Parser)]

@@ -35,28 +35,89 @@ pub fn dispatch(cmd: Command) -> Result<()> {
 
 fn cmd_wrap(a: WrapArgs, unwrapping: bool) -> Result<()> {
     let verb = if unwrapping { "unwrap" } else { "wrap" };
+
+    // 1. Scan. Never modifies anything on the first pass.
     let proposed = wrap::scan_and_apply(true, unwrapping)?;
     if proposed.is_empty() {
-        println!("mcp-jail: no {verb}-able entries found in known client configs.");
+        if unwrapping {
+            println!("No mcp-jail-wrapped entries found. Nothing to undo.");
+        } else {
+            println!(
+                "All your MCP client configs are already routed through mcp-jail.\n\
+                 Nothing to change. You're protected."
+            );
+        }
         return Ok(());
     }
-    println!("mcp-jail: {verb} plan — {} file(s)", proposed.len());
+
+    let total: usize = proposed.iter().map(|c| c.touched).sum();
+    let entry_word = if total == 1 { "entry" } else { "entries" };
+    let file_word = if proposed.len() == 1 { "file" } else { "files" };
+
+    // 2. Show the plan in plain language.
+    println!();
+    if unwrapping {
+        println!("mcp-jail found {total} wrapped {entry_word} across {} {file_word} it can restore:", proposed.len());
+    } else {
+        println!(
+            "mcp-jail found {total} MCP server {entry_word} across {} {file_word}.",
+            proposed.len()
+        );
+        println!("It will route each one through itself so every launch is checked.");
+        println!();
+        println!("Files that will be modified:");
+    }
     for c in &proposed {
-        println!("  {}  ({} entries)", c.path.display(), c.touched);
+        let entry_label = if c.touched == 1 { "entry" } else { "entries" };
+        println!("  • {} ({} {entry_label})", c.path.display(), c.touched);
     }
+    if !unwrapping {
+        println!();
+        println!("Each file gets a timestamped backup next to it before any change.");
+        println!("`mcp-jail unwrap` later puts everything back exactly as it was.");
+    }
+
     if a.dry_run {
-        println!("(dry-run; no files changed)");
+        println!("\n(dry-run — nothing written)");
         return Ok(());
     }
-    if !a.yes && !wrap::prompt_yes("Apply changes? backups will be written next to each file.") {
-        println!("aborted.");
-        return Ok(());
+
+    // 3. Confirm.
+    if !a.yes {
+        println!();
+        let q = if unwrapping {
+            "Restore original configs?"
+        } else {
+            "Apply now?"
+        };
+        if !wrap::prompt_yes(q) {
+            println!("Cancelled — nothing changed.");
+            return Ok(());
+        }
     }
+
+    // 4. Apply.
     let applied = wrap::scan_and_apply(false, unwrapping)?;
+    println!();
     for c in &applied {
-        println!("  {} {} ({} entries)", verb, c.path.display(), c.touched);
+        let entry_label = if c.touched == 1 { "entry" } else { "entries" };
+        println!("  ✓ {} — {} {entry_label} {verb}ped", c.path.display(), c.touched);
     }
-    println!("done. start your MCP client; first spawn of each server will block with a fingerprint — approve once.");
+
+    // 5. Summary.
+    println!();
+    if unwrapping {
+        println!("Done. Your MCP clients spawn their servers directly again.");
+    } else {
+        println!("Done. Your MCP client configs are protected by mcp-jail.");
+        println!();
+        println!("Next step: restart your MCP client (Claude Code, Cursor, Claude");
+        println!("Desktop, Windsurf, etc.). The first time each server launches,");
+        println!("mcp-jail will block it and print a line that starts with");
+        println!("  `mcp-jail approve …`");
+        println!("Run that line to approve the server once. After that it runs");
+        println!("sandboxed automatically.");
+    }
     Ok(())
 }
 

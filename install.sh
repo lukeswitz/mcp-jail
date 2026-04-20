@@ -105,55 +105,33 @@ run_init() {
 
 offer_wrap() {
   have mcp-jail || return 0
-
-  # Non-TTY path (curl|bash): the user invoked the installer; auto-apply.
-  # Opt out with MCP_JAIL_NO_WRAP=1.
-  if [[ ! -t 0 ]]; then
-    if [[ "${MCP_JAIL_NO_WRAP:-}" == "1" ]]; then
-      log "skipping wrap (MCP_JAIL_NO_WRAP=1). run 'mcp-jail wrap' to apply later."
-      return 0
-    fi
-    log "wrapping MCP client configs (backs up each file first)"
-    mcp-jail wrap --yes || warn "wrap returned non-zero"
+  if [[ "${MCP_JAIL_NO_WRAP:-}" == "1" ]]; then
     return 0
   fi
 
-  # TTY path: show plan, ask.
-  log "scanning known MCP client configs"
-  mcp-jail wrap --dry-run || return 0
-  printf '\nApply this wrap plan now? [Y/n] '
-  local ans; read -r ans
-  case "${ans:-y}" in
-    n|N|no|NO) log "skipped. run 'mcp-jail wrap' any time to apply." ;;
-    *) mcp-jail wrap --yes ;;
-  esac
+  # If we have a TTY, let `mcp-jail wrap` prompt the user directly. If not
+  # (curl | bash), try to re-open /dev/tty so we can still ask — falling
+  # back to auto-apply only if stdin is truly unreachable (some CI contexts).
+  echo
+  if [[ -t 0 ]]; then
+    mcp-jail wrap
+  elif [[ -r /dev/tty && -w /dev/tty ]]; then
+    mcp-jail wrap </dev/tty >/dev/tty
+  else
+    echo "mcp-jail found your MCP client configs and can protect them."
+    echo "Because this shell has no interactive input, it did not modify them."
+    echo "Run  \`mcp-jail wrap\`  in a terminal to review and apply."
+  fi
 }
 
 main() {
-  log "mcp-jail installer (version=$VERSION, prefix=$PREFIX)"
   have curl || die "curl is required"
   install_binary
   export PATH="$BIN_DIR:$PATH"
   run_init
   offer_wrap
-  cat <<EOF
-
-──────────────────────────────────────────────────────────────────
-  mcp-jail installed.
-
-  Start your MCP client (Claude Code / Cursor / Windsurf / …).
-  Each MCP server will block on first launch and print a
-  fingerprint. Approve it once with:
-
-    mcp-jail approve <fingerprint> --id <name>
-
-  Then it runs sandboxed from then on.
-
-    mcp-jail list    # approved servers
-    mcp-jail logs    # decision audit
-    mcp-jail upgrade # re-run the installer
-──────────────────────────────────────────────────────────────────
-EOF
+  # `mcp-jail wrap` prints its own next-step instructions when it applies,
+  # so we don't print a second copy here.
 }
 
 main "$@"
