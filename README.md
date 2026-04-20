@@ -1,5 +1,7 @@
 # mcp-jail
 
+[![ci](https://github.com/lukeswitz/mcp-jail/actions/workflows/ci.yml/badge.svg)](https://github.com/lukeswitz/mcp-jail/actions/workflows/ci.yml) [![release](https://github.com/lukeswitz/mcp-jail/actions/workflows/release.yml/badge.svg)](https://github.com/lukeswitz/mcp-jail/actions/workflows/release.yml)
+
 > One static binary. Blocks the MCP STDIO RCE class disclosed by OX
 > Security in April 2026 (10 CVEs, 150M+ SDK downloads, 200K+ public
 > servers). Works with Claude Code, Claude Desktop, Cursor, Windsurf,
