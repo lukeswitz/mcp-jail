@@ -1,6 +1,6 @@
 # mcp-jail
 
-[![ci](https://github.com/lukeswitz/mcp-jail/actions/workflows/ci.yml/badge.svg)](https://github.com/lukeswitz/mcp-jail/actions/workflows/ci.yml) [![release](https://github.com/lukeswitz/mcp-jail/actions/workflows/release.yml/badge.svg)](https://github.com/lukeswitz/mcp-jail/actions/workflows/release.yml) [![Pre-release](https://img.shields.io/github/v/release/lukeswitz/mcp-jail?include_prereleases&label=pre-release&color=orange)](https://github.com/lukeswitz/mcp-jail/releases) [![GitHub code size in bytes](https://img.shields.io/github/languages/code-size/lukeswitz/mcp-jail)](https://github.com/lukeswitz/mcp-jail/tree/main/mcp-jail/)
+[![ci](https://github.com/lukeswitz/mcp-jail/actions/workflows/ci.yml/badge.svg)](https://github.com/lukeswitz/mcp-jail/actions/workflows/ci.yml) [![release](https://github.com/lukeswitz/mcp-jail/actions/workflows/release.yml/badge.svg)](https://github.com/lukeswitz/mcp-jail/actions/workflows/release.yml) [![Pre-release](https://img.shields.io/github/v/release/lukeswitz/mcp-jail?include_prereleases&label=pre-release&color=orange)](https://github.com/lukeswitz/mcp-jail/releases) [![GitHub code size in bytes](https://img.shields.io/github/languages/code-size/lukeswitz/mcp-jail)](https://github.com/lukeswitz/mcp-jail/tree/main/mcp-jail/) [![CodeQL](https://github.com/lukeswitz/mcp-jail/actions/workflows/github-code-scanning/codeql/badge.svg)](https://github.com/lukeswitz/mcp-jail/actions/workflows/github-code-scanning/codeql)
 </div>
 
 > Blocks the MCP STDIO RCE class disclosed by OX Security in April 2026.
@@ -16,9 +16,9 @@ a malicious marketplace entry, or a vulnerable web app that accepts
 user-supplied MCP configs — they have arbitrary code execution on your
 machine. 
 
-Anthropic marked the behavior "expected" and declined to patch.
+**Anthropic marked the behavior "expected" and declined to patch.**
 
-## The fix
+## The "fix"
 
 Install `mcp-jail`. It rewrites every MCP entry in your client configs
 to route through itself. Before any spawn:
