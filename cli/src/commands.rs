@@ -29,7 +29,213 @@ pub fn dispatch(cmd: Command) -> Result<()> {
         Command::Upgrade => cmd_upgrade(),
         Command::Wrap(a) => cmd_wrap(a, false),
         Command::Unwrap(a) => cmd_wrap(a, true),
+        Command::Doctor => cmd_doctor(),
     }
+}
+
+fn cmd_doctor() -> Result<()> {
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut problems = 0usize;
+    let mut warnings = 0usize;
+    let ok = |msg: &str| println!("  \x1b[32m✓\x1b[0m {msg}");
+    let warn_line = |msg: &str| println!("  \x1b[33m⚠\x1b[0m {msg}");
+    let err_line = |msg: &str| println!("  \x1b[31m✗\x1b[0m {msg}");
+
+    println!("mcp-jail doctor\n");
+
+    let paths = Paths::default();
+
+    if !paths.root.is_dir() {
+        err_line(&format!(
+            "state dir missing: {} — run `mcp-jail init`",
+            paths.root.display()
+        ));
+        problems += 1;
+    } else {
+        #[cfg(unix)]
+        {
+            let mode = std::fs::metadata(&paths.root)
+                .ok()
+                .map(|m| m.permissions().mode() & 0o777)
+                .unwrap_or(0);
+            if mode != 0o700 {
+                warn_line(&format!(
+                    "state dir {} mode is {:o}; should be 700",
+                    paths.root.display(),
+                    mode
+                ));
+                warnings += 1;
+            } else {
+                ok(&format!("state dir {} (mode 700)", paths.root.display()));
+            }
+        }
+    }
+
+    if !paths.key.is_file() {
+        err_line("private key missing — run `mcp-jail init`");
+        problems += 1;
+    } else {
+        #[cfg(unix)]
+        {
+            let mode = std::fs::metadata(&paths.key)
+                .ok()
+                .map(|m| m.permissions().mode() & 0o777)
+                .unwrap_or(0);
+            let size = std::fs::metadata(&paths.key).ok().map(|m| m.len()).unwrap_or(0);
+            if mode != 0o600 {
+                err_line(&format!("private key mode {:o}; must be 600", mode));
+                problems += 1;
+            } else if size != 32 {
+                err_line(&format!("private key size {size} bytes; expected 32 (ed25519)"));
+                problems += 1;
+            } else {
+                ok("private key (32 bytes, mode 600)");
+            }
+        }
+    }
+
+    let pubkey = match load_pubkey() {
+        Ok(k) => {
+            ok("public key loaded");
+            Some(k)
+        }
+        Err(e) => {
+            err_line(&format!("public key unloadable: {e}"));
+            problems += 1;
+            None
+        }
+    };
+
+    let allow = match load_allow(&paths) {
+        Ok(a) => a,
+        Err(e) => {
+            err_line(&format!("allow.toml unreadable: {e}"));
+            problems += 1;
+            AllowList::default()
+        }
+    };
+    if let Some(pk) = &pubkey {
+        let mut bad = 0;
+        for e in &allow.entries {
+            if verify_entry(pk, e).is_err() {
+                bad += 1;
+            }
+        }
+        if bad == 0 {
+            ok(&format!(
+                "{} approved entries, all signatures valid",
+                allow.entries.len()
+            ));
+        } else {
+            err_line(&format!(
+                "{bad} of {} approved entries have INVALID signatures (tampered allow-list?)",
+                allow.entries.len()
+            ));
+            problems += 1;
+        }
+    }
+
+    match audit::verify_chain(&paths.audit) {
+        Ok(true) => ok("audit log hash-chain intact"),
+        Ok(false) => {
+            warn_line("audit log hash-chain broken (tampered or test-seeded)");
+            warnings += 1;
+        }
+        Err(e) => {
+            warn_line(&format!("audit log unreadable: {e}"));
+            warnings += 1;
+        }
+    }
+
+    match sandbox::ensure_helper() {
+        Ok(()) => ok("sandbox helper available"),
+        Err(e) => {
+            err_line(&format!("sandbox helper missing: {e}"));
+            problems += 1;
+        }
+    }
+
+    match wrap::scan_and_apply(true, false) {
+        Ok(plan) if plan.is_empty() => ok("all known MCP client configs are wrapped"),
+        Ok(plan) => {
+            let total: usize = plan.iter().map(|c| c.touched).sum();
+            warn_line(&format!(
+                "{total} MCP server entr{} across {} config file(s) NOT wrapped — run `mcp-jail wrap`",
+                if total == 1 { "y" } else { "ies" },
+                plan.len()
+            ));
+            warnings += 1;
+        }
+        Err(e) => {
+            warn_line(&format!("config scan failed: {e}"));
+            warnings += 1;
+        }
+    }
+
+    let pending = load_pending(&paths).unwrap_or_default();
+    if pending.is_empty() {
+        ok("no pending approvals");
+    } else {
+        warn_line(&format!(
+            "{} pending fingerprint(s) awaiting approval — run `mcp-jail list`",
+            pending.len()
+        ));
+        warnings += 1;
+    }
+
+    let current = env!("CARGO_PKG_VERSION");
+    match fetch_latest_version() {
+        Some(latest) if latest == current => {
+            ok(&format!("mcp-jail v{current} is up to date"));
+        }
+        Some(latest) => {
+            warn_line(&format!(
+                "update available: v{current} installed, v{latest} is latest — run `mcp-jail upgrade`"
+            ));
+            warnings += 1;
+        }
+        None => {
+            ok(&format!(
+                "mcp-jail v{current} (online version check skipped)"
+            ));
+        }
+    }
+
+    println!();
+    if problems == 0 && warnings == 0 {
+        println!("\x1b[32mAll healthy.\x1b[0m");
+    } else if problems == 0 {
+        println!("\x1b[33m{warnings} warning(s).\x1b[0m OK to use; see above.");
+    } else {
+        println!(
+            "\x1b[31m{problems} problem(s), {warnings} warning(s).\x1b[0m"
+        );
+        return Err(anyhow!("{problems} health check(s) failed"));
+    }
+    Ok(())
+}
+
+fn fetch_latest_version() -> Option<String> {
+    let out = std::process::Command::new("curl")
+        .args([
+            "-fsSL",
+            "--max-time",
+            "3",
+            "https://api.github.com/repos/lukeswitz/mcp-jail/releases/latest",
+        ])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let body = String::from_utf8_lossy(&out.stdout);
+    let tag = body.split("\"tag_name\"").nth(1)?;
+    let start = tag.find('"')? + 1;
+    let rest = &tag[start..];
+    let end = rest.find('"')?;
+    Some(rest[..end].trim_start_matches('v').to_owned())
 }
 
 fn cmd_wrap(a: WrapArgs, unwrapping: bool) -> Result<()> {

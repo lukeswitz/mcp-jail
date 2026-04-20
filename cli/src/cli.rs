@@ -27,6 +27,9 @@ pub enum Command {
     Verify,
     /// Re-run the install script to upgrade mcp-jail.
     Upgrade,
+    /// Health check: binary, state dir, key, signatures, sandbox helper,
+    /// config wrap coverage, pending approvals, latest-version check.
+    Doctor,
     /// Run a command under mcp-jail (used by wrapped configs; you don't run this yourself).
     Exec(ExecArgs),
     #[command(hide = true)]
