@@ -1,0 +1,12 @@
+target/
+dist/
+build/
+*.egg-info/
+__pycache__/
+.venv/
+node_modules/
+.pytest_cache/
+.DS_Store
+*.log
+*.swp
+
