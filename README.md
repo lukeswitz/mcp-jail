@@ -3,10 +3,9 @@
 [![ci](https://github.com/lukeswitz/mcp-jail/actions/workflows/ci.yml/badge.svg)](https://github.com/lukeswitz/mcp-jail/actions/workflows/ci.yml) [![release](https://github.com/lukeswitz/mcp-jail/actions/workflows/release.yml/badge.svg)](https://github.com/lukeswitz/mcp-jail/actions/workflows/release.yml) [![Pre-release](https://img.shields.io/github/v/release/lukeswitz/mcp-jail?include_prereleases&label=pre-release&color=orange)](https://github.com/lukeswitz/mcp-jail/releases) [![GitHub code size in bytes](https://img.shields.io/github/languages/code-size/lukeswitz/mcp-jail)](https://github.com/lukeswitz/mcp-jail/tree/main/mcp-jail/)
 </div>
 
-> One static binary. Blocks the MCP STDIO RCE class disclosed by OX
-> Security in April 2026 (10 CVEs, 150M+ SDK downloads, 200K+ public
-> servers). Works with Claude Code, Claude Desktop, Cursor, Windsurf,
-> Gemini CLI, and any other MCP client.
+> Blocks the MCP STDIO RCE class disclosed by OX Security in April 2026.
+
+Works with Claude Code, Claude Desktop, Cursor, Windsurf, Gemini CLI, and any other MCP client.
 
 ## The attack
 
@@ -15,7 +14,9 @@ spawns it as a subprocess. Validation happens *after* the process has
 already run. If an attacker controls the config — via prompt injection,
 a malicious marketplace entry, or a vulnerable web app that accepts
 user-supplied MCP configs — they have arbitrary code execution on your
-machine. Anthropic marked the behaviour "expected" and declined to patch.
+machine. 
+
+Anthropic marked the behavior "expected" and declined to patch.
 
 ## The fix
 
