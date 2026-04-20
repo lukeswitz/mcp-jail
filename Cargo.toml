@@ -9,7 +9,9 @@ license = "Apache-2.0"
 repository = "https://github.com/lukeswitz/mcp-jail"
 
 [workspace.lints.clippy]
-pedantic = { level = "warn", priority = -1 }
+# Load-bearing correctness + safety lints only. `pedantic` is intentionally
+# left off so CI doesn't trip on style nits; run `cargo clippy -W clippy::pedantic`
+# locally if you want them.
 unwrap_used = "deny"
 expect_used = "warn"
 panic = "deny"
@@ -17,8 +19,4 @@ panic_in_result_fn = "deny"
 unimplemented = "deny"
 todo = "deny"
 dbg_macro = "deny"
-print_stderr = "allow"
-print_stdout = "allow"
 await_holding_lock = "deny"
-module_name_repetitions = "allow"
-similar_names = "allow"

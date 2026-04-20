@@ -12,11 +12,10 @@ on:
 
 permissions:
   contents: write
-  id-token: write
 
 jobs:
-  build-cli:
-    name: cli / ${{ matrix.target }}
+  build:
+    name: build / ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -26,8 +25,6 @@ jobs:
           - os: macos-14
             target: aarch64-apple-darwin
             archive: tar.gz
-          # x86_64 mac built by cross-compile on an arm64 runner —
-          # avoids macos-13 runner queue flakiness.
           - os: macos-14
             target: x86_64-apple-darwin
             archive: tar.gz
@@ -78,48 +75,9 @@ jobs:
             mcp-jail-${{ matrix.target }}.${{ matrix.archive }}
             mcp-jail-${{ matrix.target }}.${{ matrix.archive }}.sha256
 
-  build-python:
-    name: python wheel
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
-        with:
-          persist-credentials: false
-      - uses: astral-sh/setup-uv@f94ec6bedd8674c4426838e6b50417d36b6ab231  # v5.1.0
-      - run: |
-          cd python
-          uv build
-      - uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882  # v4.4.3
-        with:
-          name: python-dist
-          path: python/dist/*
-
-  build-node:
-    name: node package
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af  # v4.1.0
-        with:
-          node-version: '22'
-          registry-url: 'https://registry.npmjs.org'
-      - run: |
-          cd node
-          npm ci || npm install
-          npm run build
-          npm pack
-      - uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882  # v4.4.3
-        with:
-          name: node-dist
-          path: node/mcp-jail-*.tgz
-
-  github-release:
+  release:
     name: publish GitHub release
-    needs: [build-cli, build-python, build-node]
+    needs: [build]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -134,46 +92,5 @@ jobs:
             artifacts/*.tar.gz.sha256
             artifacts/*.zip
             artifacts/*.zip.sha256
-            artifacts/*.whl
-            artifacts/*.tar.gz
-            artifacts/*.tgz
           generate_release_notes: true
           draft: false
-
-  publish-npm:
-    name: publish npm
-    needs: [github-release]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    if: startsWith(github.ref, 'refs/tags/v')
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af  # v4.1.0
-        with:
-          node-version: '22'
-          registry-url: 'https://registry.npmjs.org'
-      - run: |
-          cd node
-          npm ci || npm install
-          npm run build
-          npm publish --access public --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-  publish-pypi:
-    name: publish PyPI
-    needs: [github-release]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    if: startsWith(github.ref, 'refs/tags/v')
-    environment:
-      name: pypi
-      url: https://pypi.org/p/mcp-jail
-    steps:
-      - uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16  # v4.1.8
-        with:
-          name: python-dist
-          path: dist
-      - uses: pypa/gh-action-pypi-publish@67339c736fd9354cd4f8cb0b744f2b82a74b5c70  # v1.12.3

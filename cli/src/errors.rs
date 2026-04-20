@@ -7,6 +7,7 @@ pub enum JailError {
     #[error("argv contains interpreter-eval flag `{0}`; approve with --dangerous to allow")]
     DangerousFlag(String),
     #[error("source config at {path} changed since approval (hash {actual} != expected {expected})")]
+    #[allow(dead_code)]
     ConfigDrift {
         path: String,
         expected: String,
