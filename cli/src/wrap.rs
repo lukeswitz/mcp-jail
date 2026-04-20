@@ -173,6 +173,7 @@ pub struct Change {
     pub wrapped: Vec<WrappedEntry>,
 }
 
+#[derive(Clone)]
 pub struct WrappedEntry {
     pub id: String,
     pub command: String,
@@ -213,6 +214,66 @@ pub fn scan_and_apply(dry_run: bool, unwrapping: bool) -> Result<Vec<Change>> {
         out.push(Change { path: cfg, touched, wrapped });
     }
     Ok(out)
+}
+
+/// Scan known config files for entries that are ALREADY wrapped and return
+/// the `WrappedEntry` representation read back from each `_mcp_jail_original`
+/// marker. Used to reconcile the allow-list against the on-disk wrap state.
+pub fn scan_already_wrapped() -> Result<Vec<WrappedEntry>> {
+    let mut out = Vec::new();
+    for cfg in known_config_paths() {
+        if !cfg.is_file() {
+            continue;
+        }
+        let raw = match std::fs::read_to_string(&cfg) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let doc: Value = match serde_json::from_str(&raw) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        collect_wrapped(&doc, &cfg.display().to_string(), &mut out);
+    }
+    Ok(out)
+}
+
+fn collect_wrapped(value: &Value, source_config: &str, out: &mut Vec<WrappedEntry>) {
+    match value {
+        Value::Object(map) => {
+            if let Some(Value::Object(servers)) = map.get("mcpServers") {
+                for (id, entry) in servers {
+                    let Value::Object(entry) = entry else { continue };
+                    let Some(Value::Object(orig)) = entry.get(MARKER) else { continue };
+                    let Some(cmd) = orig.get("command").and_then(Value::as_str) else { continue };
+                    let args: Vec<String> = orig
+                        .get("args")
+                        .and_then(Value::as_array)
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|v| v.as_str().map(str::to_owned))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    out.push(WrappedEntry {
+                        id: id.clone(),
+                        command: cmd.to_owned(),
+                        args,
+                        source_config: source_config.to_owned(),
+                    });
+                }
+            }
+            for (_, v) in map {
+                collect_wrapped(v, source_config, out);
+            }
+        }
+        Value::Array(arr) => {
+            for v in arr {
+                collect_wrapped(v, source_config, out);
+            }
+        }
+        _ => {}
+    }
 }
 
 pub fn prompt_yes(message: &str) -> bool {

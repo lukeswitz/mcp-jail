@@ -6,7 +6,7 @@ use crate::wrap;
 use crate::errors::JailError;
 use crate::sandbox;
 use crate::store::{
-    append_pending, clear_pending_for, ensure_key, load_allow, load_pending, save_allow,
+    self, append_pending, clear_pending_for, ensure_key, load_allow, load_pending, save_allow,
     sign_entry, verify_entry, AllowEntry, AllowList, PendingEntry, Paths, Sandbox, SourceConfig,
 };
 use anyhow::{anyhow, Context, Result};
@@ -185,6 +185,26 @@ fn cmd_doctor() -> Result<()> {
         warnings += 1;
     }
 
+    match check_path_shadowing() {
+        Ok(0) => ok("single mcp-jail binary on PATH"),
+        Ok(n) => {
+            warn_line(&format!(
+                "{n} extra mcp-jail binar{} on PATH — shadows may cause `wrap`/`list` drift",
+                if n == 1 { "y" } else { "ies" }
+            ));
+            if let Ok(list) = collect_path_binaries() {
+                for p in list {
+                    warn_line(&format!("  {}", p.display()));
+                }
+            }
+            warnings += 1;
+        }
+        Err(e) => {
+            warn_line(&format!("PATH shadow check skipped: {e}"));
+            warnings += 1;
+        }
+    }
+
     let current = env!("CARGO_PKG_VERSION");
     match fetch_latest_version() {
         Some(latest) if latest == current => {
@@ -217,6 +237,29 @@ fn cmd_doctor() -> Result<()> {
     Ok(())
 }
 
+fn collect_path_binaries() -> Result<Vec<PathBuf>> {
+    let path = std::env::var_os("PATH").ok_or_else(|| anyhow!("PATH unset"))?;
+    let exe_name = if cfg!(windows) { "mcp-jail.exe" } else { "mcp-jail" };
+    let mut seen: Vec<PathBuf> = Vec::new();
+    for dir in std::env::split_paths(&path) {
+        let candidate = dir.join(exe_name);
+        let Ok(meta) = std::fs::metadata(&candidate) else { continue };
+        if !meta.is_file() {
+            continue;
+        }
+        let canonical = std::fs::canonicalize(&candidate).unwrap_or(candidate);
+        if !seen.iter().any(|p| p == &canonical) {
+            seen.push(canonical);
+        }
+    }
+    Ok(seen)
+}
+
+fn check_path_shadowing() -> Result<usize> {
+    let bins = collect_path_binaries()?;
+    Ok(bins.len().saturating_sub(1))
+}
+
 fn fetch_latest_version() -> Option<String> {
     let out = std::process::Command::new("curl")
         .args([
@@ -238,6 +281,244 @@ fn fetch_latest_version() -> Option<String> {
     Some(rest[..end].trim_start_matches('v').to_owned())
 }
 
+#[derive(Default)]
+struct ReconcileReport {
+    signed: usize,
+    missing_manual: Vec<String>,
+}
+
+#[derive(Clone, Copy)]
+enum PromptMode {
+    /// Prompt user per server (TTY-only).
+    Ask,
+    /// No prompting; infer "trusted" sandbox (net allowed for ssh/curl/etc,
+    /// host-restricted when detectable).
+    Trusted,
+    /// No prompting; strict defaults (net BLOCKED, fs_write=/tmp).
+    Strict,
+}
+
+fn detect_ssh_host(argv: &[String]) -> Option<String> {
+    let base = std::path::Path::new(argv.first()?)
+        .file_name()?
+        .to_str()?;
+    if !matches!(base, "ssh" | "scp" | "mosh") {
+        return None;
+    }
+    let mut i = 1;
+    while i < argv.len() {
+        let a = &argv[i];
+        if a == "-o" || a == "-i" || a == "-p" || a == "-l" || a == "-F" || a == "-J" {
+            i += 2;
+            continue;
+        }
+        if a.starts_with('-') {
+            i += 1;
+            continue;
+        }
+        let host = a.rsplit('@').next().unwrap_or(a).to_owned();
+        if !host.is_empty() {
+            return Some(host);
+        }
+        break;
+    }
+    None
+}
+
+fn detect_url_host(argv: &[String]) -> Option<String> {
+    for a in argv.iter().skip(1) {
+        if let Some(rest) = a.strip_prefix("https://").or_else(|| a.strip_prefix("http://")) {
+            let host = rest.split(['/', ':']).next()?.to_owned();
+            if !host.is_empty() {
+                return Some(host);
+            }
+        }
+    }
+    None
+}
+
+fn trusted_sandbox_for(argv: &[String]) -> Sandbox {
+    let mut sb = Sandbox::default();
+    if needs_network(argv) {
+        if let Some(h) = detect_ssh_host(argv).or_else(|| detect_url_host(argv)) {
+            sb.net.push(h);
+        } else {
+            sb.net.push("*".into());
+        }
+    } else {
+        // Most local MCP bridges talk to their host app over loopback
+        // (python bridge → Binary Ninja localhost:PORT, etc.) — safest
+        // non-breaking default.
+        sb.net.push("127.0.0.1".into());
+    }
+    sb
+}
+
+fn prompt_line(msg: &str, default: &str) -> String {
+    use std::io::{BufRead, Write};
+    print!("{msg} [{default}] ");
+    std::io::stdout().flush().ok();
+    let mut line = String::new();
+    if std::io::stdin().lock().read_line(&mut line).is_err() {
+        return default.to_owned();
+    }
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        default.to_owned()
+    } else {
+        trimmed.to_owned()
+    }
+}
+
+fn ask_sandbox(w: &wrap::WrappedEntry, argv: &[String]) -> Option<Sandbox> {
+    println!();
+    println!("── \x1b[1m{}\x1b[0m", w.id);
+    println!("   cmd: {}", format_argv(argv));
+    let suggested_host = detect_ssh_host(argv).or_else(|| detect_url_host(argv));
+    let net_hint = needs_network(argv);
+    let (hint, default_choice) = match (net_hint, &suggested_host) {
+        (true, Some(h)) => (format!("reaches remote host {h}"), "h"),
+        (true, None) => ("network-dependent (no host detected)".into(), "a"),
+        (false, _) => ("local command — most MCPs talk to 127.0.0.1".into(), "l"),
+    };
+    println!("   → {hint}");
+    println!("   network policy:");
+    println!("     [l]oopback only (127.0.0.1)   — safe default for local bridges");
+    if suggested_host.is_some() {
+        println!(
+            "     [h]ost-restricted             — allow only {}",
+            suggested_host.as_deref().unwrap_or("")
+        );
+    }
+    println!("     [a]ll outbound                — no restriction");
+    println!("     [b]lock                       — no network at all");
+    println!("     [s]kip                        — don't add this server");
+    let ans = prompt_line("   choice", default_choice);
+    let mut sb = Sandbox::default();
+    match ans.chars().next().unwrap_or('l') {
+        'l' | 'L' => sb.net.push("127.0.0.1".into()),
+        'h' | 'H' => {
+            let host_default = suggested_host.clone().unwrap_or_default();
+            let h = if host_default.is_empty() {
+                prompt_line("   host", "")
+            } else {
+                prompt_line("   host", &host_default)
+            };
+            if !h.is_empty() {
+                sb.net.push(h);
+            }
+        }
+        'a' | 'A' => sb.net.push("*".into()),
+        's' | 'S' => return None,
+        _ => {}
+    }
+    Some(sb)
+}
+
+fn resolve_prompt_mode(a: &WrapArgs) -> PromptMode {
+    if a.strict {
+        return PromptMode::Strict;
+    }
+    if a.yes {
+        return PromptMode::Trusted;
+    }
+    // Interactive only if STDIN is a TTY; otherwise fall back to Trusted so
+    // installer pipelines don't break MCP servers on first launch.
+    use std::io::IsTerminal;
+    if std::io::stdin().is_terminal() {
+        PromptMode::Ask
+    } else {
+        PromptMode::Trusted
+    }
+}
+
+fn choose_sandbox(w: &wrap::WrappedEntry, argv: &[String], mode: PromptMode) -> Option<Sandbox> {
+    match mode {
+        PromptMode::Strict => Some(Sandbox::default()),
+        PromptMode::Trusted => Some(trusted_sandbox_for(argv)),
+        PromptMode::Ask => ask_sandbox(w, argv),
+    }
+}
+
+fn approve_wrapped(
+    wrapped: &[wrap::WrappedEntry],
+    only_missing: bool,
+    mode: PromptMode,
+) -> Result<ReconcileReport> {
+    let mut report = ReconcileReport::default();
+    if wrapped.is_empty() {
+        return Ok(report);
+    }
+    let paths = Paths::default();
+    paths.ensure()?;
+    let key = ensure_key(&paths)?;
+    let mut allow = load_allow(&paths)?;
+    let mut dirty = false;
+    for w in wrapped {
+        let mut argv = vec![w.command.clone()];
+        argv.extend(w.args.iter().cloned());
+        if let Some(flag) = find_dangerous_flag(&argv) {
+            let already_ok = allow.entries.iter().any(|e| e.id == w.id);
+            if !(only_missing && already_ok) {
+                report.missing_manual.push(format!("{} (uses `{}`)", w.id, flag));
+            }
+            continue;
+        }
+        let req = SpawnRequest {
+            command: w.command.clone(),
+            argv: argv.clone(),
+            env: std::collections::BTreeMap::new(),
+            cwd: String::new(),
+            source_config: Some(w.source_config.clone()),
+        };
+        let fingerprint = req.fingerprint(&[]);
+        if only_missing {
+            let vk = key.verifying_key();
+            let have = allow.entries.iter().any(|e| {
+                e.id == w.id && e.fingerprint == fingerprint && verify_entry(&vk, e).is_ok()
+            });
+            if have {
+                continue;
+            }
+        }
+        let Some(sandbox) = choose_sandbox(w, &argv, mode) else {
+            continue;
+        };
+        allow.entries.retain(|e| e.id != w.id);
+        let mut entry = AllowEntry {
+            id: w.id.clone(),
+            fingerprint,
+            argv,
+            command: w.command.clone(),
+            cwd: String::new(),
+            env_subset: Vec::new(),
+            dangerous: false,
+            source_config: Some(SourceConfig {
+                path: w.source_config.clone(),
+                hash: String::new(),
+            }),
+            sandbox,
+            signed_at: Utc::now(),
+            signature: String::new(),
+        };
+        sign_entry(&key, &mut entry)?;
+        sandbox::write_profile(&paths.root, &entry)?;
+        allow.entries.push(entry);
+        report.signed += 1;
+        dirty = true;
+    }
+    if dirty {
+        save_allow(&paths, &allow)?;
+    }
+    Ok(report)
+}
+
+fn reconcile_allow_list(wrapped: &[wrap::WrappedEntry]) -> Result<ReconcileReport> {
+    // Reconcile uses strict defaults — never prompts. Users can re-run
+    // `mcp-jail wrap` interactively to redo sandbox choices.
+    approve_wrapped(wrapped, true, PromptMode::Strict)
+}
+
 fn cmd_wrap(a: WrapArgs, unwrapping: bool) -> Result<()> {
     let verb = if unwrapping { "unwrap" } else { "wrap" };
 
@@ -245,11 +526,45 @@ fn cmd_wrap(a: WrapArgs, unwrapping: bool) -> Result<()> {
     if proposed.is_empty() {
         if unwrapping {
             println!("No mcp-jail-wrapped entries found. Nothing to undo.");
-        } else {
+            return Ok(());
+        }
+        let existing = wrap::scan_already_wrapped()?;
+        if existing.is_empty() {
             println!(
-                "All your MCP client configs are already routed through mcp-jail.\n\
-                 Nothing to change. You're protected."
+                "No MCP servers found in any known client config.\n\
+                 Install/configure an MCP client first, then re-run `mcp-jail wrap`."
             );
+            return Ok(());
+        }
+        let reconciled = if a.no_auto_approve {
+            ReconcileReport::default()
+        } else {
+            reconcile_allow_list(&existing)?
+        };
+        println!(
+            "All {} MCP server entr{} in your client configs are already routed through mcp-jail.",
+            existing.len(),
+            if existing.len() == 1 { "y" } else { "ies" }
+        );
+        if reconciled.signed == 0 && reconciled.missing_manual.is_empty() {
+            println!("Allow-list is in sync — nothing to do.");
+        } else {
+            if reconciled.signed > 0 {
+                let word = if reconciled.signed == 1 { "server" } else { "servers" };
+                println!(
+                    "Re-approved {} wrapped {word} that were missing from the allow-list.",
+                    reconciled.signed
+                );
+            }
+            if !reconciled.missing_manual.is_empty() {
+                println!();
+                println!("The following wrapped server(s) use interpreter-eval flags and were NOT");
+                println!("auto-approved — review argv and approve manually if you trust them:");
+                for m in &reconciled.missing_manual {
+                    println!("  • {m}");
+                }
+                println!("Run `mcp-jail approve <fp> --id <name> --dangerous` to allow.");
+            }
         }
         return Ok(());
     }
@@ -311,54 +626,24 @@ fn cmd_wrap(a: WrapArgs, unwrapping: bool) -> Result<()> {
         return Ok(());
     }
 
-    let mut auto_signed = 0usize;
-    let mut manual_needed: Vec<String> = Vec::new();
-    if !a.no_auto_approve {
-        let paths = Paths::default();
-        paths.ensure()?;
-        let key = ensure_key(&paths)?;
-        let mut allow = load_allow(&paths)?;
-        for change in &applied {
-            for w in &change.wrapped {
-                let mut argv = vec![w.command.clone()];
-                argv.extend(w.args.iter().cloned());
-                if let Some(flag) = find_dangerous_flag(&argv) {
-                    manual_needed.push(format!("{} (uses `{}`)", w.id, flag));
-                    continue;
-                }
-                let req = SpawnRequest {
-                    command: w.command.clone(),
-                    argv: argv.clone(),
-                    env: std::collections::BTreeMap::new(),
-                    cwd: String::new(),
-                    source_config: Some(w.source_config.clone()),
-                };
-                let fingerprint = req.fingerprint(&[]);
-                allow.entries.retain(|e| e.id != w.id);
-                let mut entry = AllowEntry {
-                    id: w.id.clone(),
-                    fingerprint,
-                    argv,
-                    command: w.command.clone(),
-                    cwd: String::new(),
-                    env_subset: Vec::new(),
-                    dangerous: false,
-                    source_config: Some(SourceConfig {
-                        path: w.source_config.clone(),
-                        hash: String::new(),
-                    }),
-                    sandbox: Sandbox::default(),
-                    signed_at: Utc::now(),
-                    signature: String::new(),
-                };
-                sign_entry(&key, &mut entry)?;
-                sandbox::write_profile(&paths.root, &entry)?;
-                allow.entries.push(entry);
-                auto_signed += 1;
-            }
+    let report = if a.no_auto_approve {
+        ReconcileReport::default()
+    } else {
+        let all: Vec<wrap::WrappedEntry> = applied
+            .iter()
+            .flat_map(|c| c.wrapped.iter().cloned())
+            .collect();
+        let mode = resolve_prompt_mode(&a);
+        if matches!(mode, PromptMode::Ask) {
+            println!();
+            println!("Configuring sandbox for each server.");
+            println!("Press Enter to accept the bracketed default. Choose [b]lock if unsure —");
+            println!("you can grant more later with `mcp-jail approve`.");
         }
-        save_allow(&paths, &allow)?;
-    }
+        approve_wrapped(&all, /* only_missing */ false, mode)?
+    };
+    let auto_signed = report.signed;
+    let manual_needed = report.missing_manual;
 
     println!();
     println!("Done. Your MCP client configs are protected by mcp-jail.");
@@ -499,32 +784,149 @@ fn cmd_approve(a: ApproveArgs) -> Result<()> {
     Ok(())
 }
 
+fn needs_network(argv: &[String]) -> bool {
+    let Some(cmd) = argv.first() else { return false };
+    let base = std::path::Path::new(cmd)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(cmd);
+    matches!(
+        base,
+        "ssh" | "scp" | "curl" | "wget" | "rsync" | "mosh" | "nc" | "ncat" | "socat"
+    )
+}
+
+fn shorten_home(s: &str) -> String {
+    if let Some(home) = dirs::home_dir().and_then(|p| p.to_str().map(str::to_owned)) {
+        if let Some(rest) = s.strip_prefix(&home) {
+            return format!("~{rest}");
+        }
+    }
+    s.to_owned()
+}
+
+fn format_argv(argv: &[String]) -> String {
+    argv.iter()
+        .map(|a| {
+            let s = shorten_home(a);
+            if s.contains(' ') { format!("\"{s}\"") } else { s }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn format_net(items: &[String]) -> String {
+    if items.is_empty() {
+        "net:      BLOCKED (no egress)".into()
+    } else {
+        format!("net:      allow {}", items.join(", "))
+    }
+}
+
+fn format_fs_read(items: &[String], secrets: &[String]) -> String {
+    let mut extra: Vec<String> = items.iter().map(|s| shorten_home(s)).collect();
+    extra.extend(secrets.iter().map(|s| format!("{} (override)", shorten_home(s))));
+    if extra.is_empty() {
+        "fs_read:  most paths OK; blocks your machines local creds only (~/.ssh, ~/.aws, Keychains, etc.)".into()
+    } else {
+        format!(
+            "fs_read:  most paths OK; blocks your machines local creds; explicit grants: {}",
+            extra.join(", ")
+        )
+    }
+}
+
+fn format_fs_write(items: &[String]) -> String {
+    if items.is_empty() {
+        "fs_write: /tmp, /var/folders only".into()
+    } else {
+        let extra: Vec<String> = items.iter().map(|s| shorten_home(s)).collect();
+        format!("fs_write: /tmp + {}", extra.join(", "))
+    }
+}
+
+fn format_dangerous(d: bool) -> &'static str {
+    if d {
+        "dangerous-flags: ALLOWED (-c / -e / /c)"
+    } else {
+        "dangerous-flags: blocked"
+    }
+}
+
 fn cmd_list() -> Result<()> {
     let paths = Paths::default();
     let allow = load_allow(&paths)?;
-    println!("# approved");
-    for e in &allow.entries {
-        println!(
-            "  {:<24} {}  dangerous={} net={:?} fs_read={:?} fs_write={:?}",
-            e.id,
-            &e.fingerprint[..12],
-            e.dangerous,
-            e.sandbox.net,
-            e.sandbox.fs_read,
-            e.sandbox.fs_write,
-        );
+
+    let mut pending = load_pending(&paths)?;
+    let before = pending.len();
+    pending.retain(|p| {
+        !allow
+            .entries
+            .iter()
+            .any(|e| e.argv == p.request.argv && e.command == p.request.command)
+    });
+    let pruned = before - pending.len();
+    if pruned > 0 {
+        store::save_pending(&paths, &pending)?;
     }
-    let pending = load_pending(&paths)?;
-    if !pending.is_empty() {
-        println!("# pending");
-        for p in pending.iter().rev().take(20) {
+
+    println!("# approved ({})", allow.entries.len());
+    if allow.entries.is_empty() {
+        println!("  (none — run `mcp-jail wrap` to populate)");
+    }
+    for e in &allow.entries {
+        let src = e
+            .source_config
+            .as_ref()
+            .map(|s| shorten_home(&s.path))
+            .unwrap_or_else(|| "(none)".into());
+        println!("  {}  fp={}", e.id, &e.fingerprint[..12]);
+        println!("    cmd: {}", format_argv(&e.argv));
+        println!("    src: {src}");
+        println!("    {}", format_net(&e.sandbox.net));
+        println!("    {}", format_fs_read(&e.sandbox.fs_read, &e.sandbox.fs_read_secret));
+        println!("    {}", format_fs_write(&e.sandbox.fs_write));
+        println!("    {}", format_dangerous(e.dangerous));
+        if needs_network(&e.argv) && e.sandbox.net.is_empty() {
             println!(
-                "  {}  {}  argv={:?}",
-                p.ts.format("%Y-%m-%d %H:%M:%S"),
-                &p.fingerprint[..12],
-                p.request.argv
+                "    \x1b[33m⚠  this command looks network-dependent but net is BLOCKED;\x1b[0m"
+            );
+            println!(
+                "    \x1b[33m   grant with: mcp-jail approve {} --id {} --net <host>\x1b[0m",
+                &e.fingerprint[..12],
+                e.id,
             );
         }
+    }
+
+    println!();
+    println!("Baselines applied to every entry (not about target/pentest data — only YOUR host):");
+    println!("  • fs_read  — all paths OK except: ~/.ssh ~/.aws ~/.gcp ~/.azure ~/.config/{{gh,gcloud,op}}");
+    println!("               ~/.gnupg ~/.password-store ~/.docker ~/.kube shell histories,");
+    println!("               Library/Keychains, 1Password/Bitwarden, browser storage, /etc/shadow, /etc/ssh");
+    println!("  • fs_write — denied everywhere except /tmp, /private/var/folders (scratch)");
+    println!("  • net      — per-entry policy shown above");
+    println!();
+    println!("Target files at ~/targets, ~/loot, etc. are NOT blocked. Override a specific");
+    println!("secret path if you truly need it: mcp-jail approve <fp> --id <name> --fs-read-secret <path>");
+
+    if !pending.is_empty() {
+        println!();
+        println!("# pending ({})", pending.len());
+        for p in pending.iter().rev().take(20) {
+            println!(
+                "  {}  fp={}",
+                p.ts.format("%Y-%m-%d %H:%M:%S"),
+                &p.fingerprint[..12]
+            );
+            println!("    argv: {}", format_argv(&p.request.argv));
+        }
+        println!();
+        println!("Approve with: mcp-jail approve <fp-prefix> --id <name>");
+    } else if pruned > 0 {
+        println!();
+        println!("(pruned {pruned} stale pending entr{} now covered by approvals)",
+            if pruned == 1 { "y" } else { "ies" });
     }
     Ok(())
 }

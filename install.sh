@@ -45,6 +45,57 @@ sudo_if_needed() {
   fi
 }
 
+# Remove stale copies in other common locations so a single binary on PATH wins.
+# Runs before install so old copies never shadow the fresh one.
+cleanup_stale_copies() {
+  local target="$BIN_DIR/mcp-jail"
+  local candidates=(
+    "/usr/local/bin/mcp-jail"
+    "/opt/homebrew/bin/mcp-jail"
+    "$HOME/.cargo/bin/mcp-jail"
+    "$HOME/.local/bin/mcp-jail"
+    "/usr/bin/mcp-jail"
+  )
+  local removed=0 c real_c real_target
+  real_target="$(cd "$(dirname "$target")" 2>/dev/null && pwd -P)/$(basename "$target")" || real_target="$target"
+  for c in "${candidates[@]}"; do
+    [[ -e "$c" || -L "$c" ]] || continue
+    real_c="$(cd "$(dirname "$c")" 2>/dev/null && pwd -P)/$(basename "$c")" || real_c="$c"
+    [[ "$real_c" == "$real_target" ]] && continue
+    log "removing stale $c"
+    if [[ -w "$(dirname "$c")" ]]; then rm -f "$c"
+    elif have sudo; then sudo rm -f "$c"
+    else warn "cannot remove $c (no write perm, no sudo) — this may shadow $target"; continue
+    fi
+    removed=$((removed + 1))
+  done
+  [[ $removed -gt 0 ]] && log "cleaned $removed stale copy/copies"
+  return 0
+}
+
+verify_single_on_path() {
+  have mcp-jail || return 0
+  local resolved target_real
+  resolved="$(command -v mcp-jail)"
+  target_real="$(cd "$(dirname "$BIN_DIR/mcp-jail")" 2>/dev/null && pwd -P)/mcp-jail"
+  local resolved_real
+  resolved_real="$(cd "$(dirname "$resolved")" 2>/dev/null && pwd -P)/$(basename "$resolved")"
+  if [[ "$resolved_real" != "$target_real" ]]; then
+    warn "PATH resolves mcp-jail to $resolved (expected $BIN_DIR/mcp-jail)"
+    warn "another copy is shadowing the install — remove it or adjust PATH"
+    return 1
+  fi
+  # Second check: more than one mcp-jail reachable via PATH.
+  local count
+  count="$(command -v -a mcp-jail 2>/dev/null | awk 'NF' | sort -u | wc -l | tr -d ' ')"
+  if [[ "${count:-0}" -gt 1 ]]; then
+    warn "multiple mcp-jail binaries on PATH:"
+    command -v -a mcp-jail | awk 'NF' | sort -u | sed 's/^/  /' >&2
+    return 1
+  fi
+  log "mcp-jail resolves to $resolved (clean)"
+}
+
 install_binary() {
   local target ext url sha_url
   target="$(detect_target)"
@@ -82,8 +133,10 @@ install_binary() {
   [[ -x "$staged" ]] || die "binary not found in archive"
 
   mkdir -p "$BIN_DIR"
+  cleanup_stale_copies
   sudo_if_needed install -m 0755 "$staged" "$BIN_DIR/$(basename "$staged")"
   log "installed $(basename "$staged") → $BIN_DIR"
+  verify_single_on_path || true
 }
 
 run_init() {

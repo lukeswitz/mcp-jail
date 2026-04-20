@@ -27,10 +27,9 @@ pub enum Command {
     Verify,
     /// Re-run the install script to upgrade mcp-jail.
     Upgrade,
-    /// Health check: binary, state dir, key, signatures, sandbox helper,
-    /// config wrap coverage, pending approvals, latest-version check.
+    /// Health check: state dir, key, signatures, sandbox helper, pending approvals, version check.
     Doctor,
-    /// Run a command under mcp-jail (used by wrapped configs; you don't run this yourself).
+    #[command(hide = true)]
     Exec(ExecArgs),
     #[command(hide = true)]
     Check,
@@ -51,6 +50,10 @@ pub struct WrapArgs {
     /// the default sandbox profile.
     #[arg(long = "no-auto-approve")]
     pub no_auto_approve: bool,
+    /// Force strict defaults (net BLOCKED, fs_write=/tmp) on every server
+    /// instead of prompting. Use `--yes --strict` to silently lock down.
+    #[arg(long)]
+    pub strict: bool,
 }
 
 #[derive(Parser)]

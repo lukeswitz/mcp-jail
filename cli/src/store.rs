@@ -153,12 +153,7 @@ pub fn load_pending(paths: &Paths) -> Result<Vec<PendingEntry>> {
         .collect())
 }
 
-pub fn clear_pending_for(paths: &Paths, fingerprint: &str) -> Result<()> {
-    let all = load_pending(paths)?;
-    let kept: Vec<_> = all
-        .into_iter()
-        .filter(|p| p.fingerprint != fingerprint)
-        .collect();
+pub fn save_pending(paths: &Paths, entries: &[PendingEntry]) -> Result<()> {
     let tmp = paths.pending.with_extension("jsonl.tmp");
     let mut f = OpenOptions::new()
         .create(true)
@@ -166,13 +161,22 @@ pub fn clear_pending_for(paths: &Paths, fingerprint: &str) -> Result<()> {
         .write(true)
         .open(&tmp)?;
     f.lock_exclusive()?;
-    for e in kept {
-        writeln!(f, "{}", serde_json::to_string(&e)?)?;
+    for e in entries {
+        writeln!(f, "{}", serde_json::to_string(e)?)?;
     }
     f.sync_all()?;
     f.unlock().ok();
     std::fs::rename(&tmp, &paths.pending)?;
     Ok(())
+}
+
+pub fn clear_pending_for(paths: &Paths, fingerprint: &str) -> Result<()> {
+    let all = load_pending(paths)?;
+    let kept: Vec<_> = all
+        .into_iter()
+        .filter(|p| p.fingerprint != fingerprint)
+        .collect();
+    save_pending(paths, &kept)
 }
 
 pub fn ensure_key(paths: &Paths) -> Result<SigningKey> {
