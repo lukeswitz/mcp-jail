@@ -87,6 +87,7 @@ jobs:
           merge-multiple: true
       - uses: softprops/action-gh-release@c062e08bd532815e2082a85e87e3ef29c3e6d191  # v2.0.8
         with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
           files: |
             artifacts/*.tar.gz
             artifacts/*.tar.gz.sha256
@@ -94,3 +95,4 @@ jobs:
             artifacts/*.zip.sha256
           generate_release_notes: true
           draft: false
+          fail_on_unmatched_files: true
