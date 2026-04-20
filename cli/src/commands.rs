@@ -62,7 +62,7 @@ fn cmd_wrap(a: WrapArgs, unwrapping: bool) -> Result<()> {
 
 fn cmd_upgrade() -> Result<()> {
     let url =
-        "https://raw.githubusercontent.com/mcp-jail/mcp-jail/main/install.sh";
+        "https://raw.githubusercontent.com/lukeswitz/mcp-jail/main/install.sh";
     let status = std::process::Command::new("sh")
         .arg("-c")
         .arg(format!("curl -fsSL {url} | bash"))
@@ -493,6 +493,7 @@ fn cmd_exec(a: ExecArgs) -> Result<()> {
     }
 }
 
+#[cfg(unix)]
 fn exec_or_die(wrapped: &[String], env_subset: &[String]) -> Result<()> {
     use std::ffi::CString;
     use std::os::unix::ffi::OsStrExt;
@@ -542,6 +543,30 @@ fn exec_or_die(wrapped: &[String], env_subset: &[String]) -> Result<()> {
     }
     let err = std::io::Error::last_os_error();
     Err(anyhow!("execve({}) failed: {err}", wrapped[0]))
+}
+
+#[cfg(not(unix))]
+fn exec_or_die(wrapped: &[String], env_subset: &[String]) -> Result<()> {
+    // Windows has no execve analogue. Spawn the child, inherit stdio,
+    // wait, and propagate the exit code so the parent acts like the
+    // child replaced it (close enough for Claude Code's MCP spawn path).
+    use std::collections::HashSet;
+    let declared: HashSet<&str> = env_subset.iter().map(String::as_str).collect();
+    let essentials = [
+        "PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "SHELL", "LANG", "LC_ALL",
+        "SSH_AUTH_SOCK", "DISPLAY", "XAUTHORITY",
+        "USERPROFILE", "APPDATA", "LOCALAPPDATA", "SYSTEMROOT", "TEMP", "TMP",
+    ];
+    let mut cmd = std::process::Command::new(&wrapped[0]);
+    cmd.args(&wrapped[1..]);
+    cmd.env_clear();
+    for (k, v) in std::env::vars() {
+        if declared.contains(k.as_str()) || essentials.contains(&k.as_str()) {
+            cmd.env(k, v);
+        }
+    }
+    let status = cmd.status().context("spawn wrapped child")?;
+    std::process::exit(status.code().unwrap_or(1));
 }
 
 fn install_python_pth() -> Result<()> {

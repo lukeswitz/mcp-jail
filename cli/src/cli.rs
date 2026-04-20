@@ -33,7 +33,7 @@ pub enum Command {
     /// Works with any client regardless of language or inheritance model.
     Exec(ExecArgs),
     /// Re-run the install script to upgrade binary, Python, and Node packages.
-    /// Equivalent to: curl -fsSL https://raw.githubusercontent.com/mcp-jail/mcp-jail/main/install.sh | bash
+    /// Equivalent to: curl -fsSL https://raw.githubusercontent.com/lukeswitz/mcp-jail/main/install.sh | bash
     Upgrade,
     /// Scan known MCP client configs and rewrite every entry to route
     /// through `mcp-jail exec`. Backs up each file it modifies.

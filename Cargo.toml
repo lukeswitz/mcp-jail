@@ -6,7 +6,7 @@ members = ["cli"]
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
-repository = "https://github.com/mcp-jail/mcp-jail"
+repository = "https://github.com/lukeswitz/mcp-jail"
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }

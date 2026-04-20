@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # mcp-jail one-shot installer.
 #
-#   curl -fsSL https://raw.githubusercontent.com/mcp-jail/mcp-jail/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/lukeswitz/mcp-jail/main/install.sh | bash
 #
 # Detects OS/arch, downloads the signed release binary, installs the
 # Python and Node interposers if those runtimes exist, runs `mcp-jail init`.
@@ -9,7 +9,7 @@
 
 set -euo pipefail
 
-REPO="mcp-jail/mcp-jail"
+REPO="lukeswitz/mcp-jail"
 VERSION="${MCP_JAIL_VERSION:-latest}"
 PREFIX="${MCP_JAIL_PREFIX:-/usr/local}"
 BIN_DIR="$PREFIX/bin"

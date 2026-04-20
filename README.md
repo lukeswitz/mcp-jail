@@ -33,7 +33,7 @@ binary, installs the Python + Node interposers if those runtimes are
 present, runs `mcp-jail init`.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mcp-jail/mcp-jail/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/lukeswitz/mcp-jail/main/install.sh | bash
 ```
 
 Re-run the same command any time to upgrade. Or from the CLI:
@@ -45,7 +45,7 @@ mcp-jail upgrade
 <details>
 <summary><b>Manual install / from source / per-platform</b></summary>
 
-**Per-platform binary** — see [Releases](https://github.com/mcp-jail/mcp-jail/releases)
+**Per-platform binary** — see [Releases](https://github.com/lukeswitz/mcp-jail/releases)
 for `aarch64-apple-darwin`, `x86_64-apple-darwin`,
 `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`,
 `x86_64-pc-windows-msvc`. Every asset has a `.sha256` sidecar.
@@ -76,7 +76,7 @@ Three steps. None involve hand-editing JSON.
 
 **1. Install.**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mcp-jail/mcp-jail/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/lukeswitz/mcp-jail/main/install.sh | bash
 ```
 The installer also scans your MCP client configs (Claude Code, Claude
 Desktop, Cursor, Windsurf, Gemini CLI, Copilot) and offers to wrap every

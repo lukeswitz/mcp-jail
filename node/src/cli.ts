@@ -54,7 +54,7 @@ function resolveCli(): string | null {
 export function evaluate(input: EvaluateInput): Decision {
   const cli = resolveCli();
   if (cli === null) {
-    return deny('mcp-jail CLI not found in PATH; install from https://github.com/mcp-jail/mcp-jail');
+    return deny('mcp-jail CLI not found in PATH; install from https://github.com/lukeswitz/mcp-jail');
   }
 
   const payload = JSON.stringify({

@@ -18,8 +18,8 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/mcp-jail/mcp-jail"
-Issues = "https://github.com/mcp-jail/mcp-jail/issues"
+Homepage = "https://github.com/lukeswitz/mcp-jail"
+Issues = "https://github.com/lukeswitz/mcp-jail/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mcp_jail"]

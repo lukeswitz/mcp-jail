@@ -44,7 +44,7 @@ def check(
     if cli is None:
         return Decision(
             allow=False,
-            reason="mcp-jail CLI not found in PATH; install from https://github.com/mcp-jail/mcp-jail",
+            reason="mcp-jail CLI not found in PATH; install from https://github.com/lukeswitz/mcp-jail",
             fingerprint="",
             wrapped_argv=None,
             env_allow=[],

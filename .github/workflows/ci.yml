@@ -12,6 +12,7 @@ jobs:
   rust:
     name: rust / ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
@@ -42,6 +43,7 @@ jobs:
   python:
     name: python
     runs-on: macos-14
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
@@ -69,6 +71,7 @@ jobs:
   node:
     name: node
     runs-on: macos-14
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
