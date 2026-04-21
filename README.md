@@ -1,6 +1,9 @@
+<div align=center>
+
 # mcp-jail
 
 [![ci](https://github.com/lukeswitz/mcp-jail/actions/workflows/ci.yml/badge.svg)](https://github.com/lukeswitz/mcp-jail/actions/workflows/ci.yml) [![release](https://github.com/lukeswitz/mcp-jail/actions/workflows/release.yml/badge.svg)](https://github.com/lukeswitz/mcp-jail/actions/workflows/release.yml) [![Pre-release](https://img.shields.io/github/v/release/lukeswitz/mcp-jail?include_prereleases&label=pre-release&color=orange)](https://github.com/lukeswitz/mcp-jail/releases) [![GitHub code size in bytes](https://img.shields.io/github/languages/code-size/lukeswitz/mcp-jail)](https://github.com/lukeswitz/mcp-jail/tree/main/mcp-jail/) [![CodeQL](https://github.com/lukeswitz/mcp-jail/actions/workflows/github-code-scanning/codeql/badge.svg)](https://github.com/lukeswitz/mcp-jail/actions/workflows/github-code-scanning/codeql)
+
 </div>
 
 > Blocks the MCP STDIO RCE class disclosed by OX Security in April 2026.
@@ -18,7 +21,7 @@ machine.
 
 **Anthropic marked the behavior "expected" and declined to patch.**
 
-## The "fix"
+## The fix
 
 Install `mcp-jail`. It rewrites every MCP entry in your client configs
 to route through itself. Before any spawn:
@@ -221,13 +224,12 @@ blocks the downstream spawn) are tracked as a follow-up.
 
 ## Status
 
-v0.1 — macOS arm64 + x86_64, Linux x86_64 + aarch64, Windows x86_64.
-One static binary, no runtime deps.
+v0.2 — macOS arm64 + x86_64, Linux x86_64 + aarch64, Windows x86_64.
 
 Tested end-to-end against real MCP servers in two environments: a
 host-local Python MCP, an SSH-tunneled CLI MCP on a VM, and an
 SSH-tunneled Java MCP on a VM. All three round-trip MCP tool calls
-correctly under the sandbox.
+correctly under the sandbox. 
 
 ---
 
