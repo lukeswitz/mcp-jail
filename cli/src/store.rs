@@ -56,11 +56,25 @@ pub struct Sandbox {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PendingEntry {
+    /// First time this fingerprint was seen.
     pub ts: DateTime<Utc>,
     pub fingerprint: String,
     pub request: SpawnRequest,
     pub reason: String,
+    /// Most recent time this fingerprint was blocked. Optional for
+    /// backward compatibility with pre-0.x records that lacked it.
+    #[serde(default)]
+    pub last_seen: Option<DateTime<Utc>>,
+    /// How many blocked attempts share this fingerprint. Optional for
+    /// backward compatibility.
+    #[serde(default)]
+    pub hit_count: Option<u32>,
 }
+
+/// Pending entries older than this are silently pruned on every `list`
+/// / `exec` call. Keeps the queue from ballooning under sweep tests or
+/// an over-eager client that keeps retrying a blocked launch.
+pub const PENDING_MAX_AGE_DAYS: i64 = 7;
 
 pub struct Paths {
     pub root: PathBuf,
@@ -131,16 +145,23 @@ pub fn save_allow(paths: &Paths, allow: &AllowList) -> Result<()> {
     Ok(())
 }
 
-pub fn append_pending(paths: &Paths, entry: &PendingEntry) -> Result<()> {
-    let mut f = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&paths.pending)?;
-    f.lock_exclusive()?;
-    let line = serde_json::to_string(entry)?;
-    writeln!(f, "{line}")?;
-    f.unlock().ok();
-    Ok(())
+/// Upsert a pending entry: if an entry with the same fingerprint already
+/// exists, bump its `last_seen` + `hit_count`; otherwise append. Always
+/// writes the file back with mode 0600 so leaked env-var redaction is
+/// backed by strict filesystem permissions.
+pub fn upsert_pending(paths: &Paths, mut entry: PendingEntry) -> Result<()> {
+    let mut all = load_pending(paths).unwrap_or_default();
+    let now = entry.ts;
+    if let Some(existing) = all.iter_mut().find(|p| p.fingerprint == entry.fingerprint) {
+        existing.last_seen = Some(now);
+        existing.hit_count = Some(existing.hit_count.unwrap_or(1).saturating_add(1));
+        existing.reason = entry.reason;
+    } else {
+        entry.last_seen = Some(now);
+        entry.hit_count = Some(1);
+        all.push(entry);
+    }
+    save_pending(paths, &all)
 }
 
 pub fn load_pending(paths: &Paths) -> Result<Vec<PendingEntry>> {
@@ -167,7 +188,35 @@ pub fn save_pending(paths: &Paths, entries: &[PendingEntry]) -> Result<()> {
     f.sync_all()?;
     f.unlock().ok();
     std::fs::rename(&tmp, &paths.pending)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // 0600: pending is write-only state; even with env redaction we
+        // don't want argv/cwd readable by other users on shared hosts.
+        let perms = std::fs::Permissions::from_mode(0o600);
+        std::fs::set_permissions(&paths.pending, perms)?;
+    }
     Ok(())
+}
+
+/// Drop pending entries older than `PENDING_MAX_AGE_DAYS` and persist.
+/// Returns the number of entries removed. Cheap no-op when nothing is stale.
+pub fn auto_prune_pending(paths: &Paths) -> Result<usize> {
+    let all = load_pending(paths).unwrap_or_default();
+    if all.is_empty() {
+        return Ok(0);
+    }
+    let cutoff = Utc::now() - chrono::Duration::days(PENDING_MAX_AGE_DAYS);
+    let before = all.len();
+    let kept: Vec<_> = all
+        .into_iter()
+        .filter(|p| p.last_seen.unwrap_or(p.ts) >= cutoff)
+        .collect();
+    let pruned = before - kept.len();
+    if pruned > 0 {
+        save_pending(paths, &kept)?;
+    }
+    Ok(pruned)
 }
 
 pub fn clear_pending_for(paths: &Paths, fingerprint: &str) -> Result<()> {

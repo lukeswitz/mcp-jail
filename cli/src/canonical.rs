@@ -15,6 +15,18 @@ pub struct SpawnRequest {
 }
 
 impl SpawnRequest {
+    /// Replace every env value with an empty string, keeping only the keys.
+    /// Called before a SpawnRequest is persisted to `pending.jsonl` so that
+    /// secrets (OPENAI_API_KEY, SSH agent sockets, etc.) captured from the
+    /// spawning process never hit disk. Fingerprints are computed BEFORE
+    /// this runs and stored separately on the PendingEntry, so redaction
+    /// does not affect matching.
+    pub fn redact_env(&mut self) {
+        for v in self.env.values_mut() {
+            v.clear();
+        }
+    }
+
     #[must_use]
     pub fn fingerprint(&self, env_subset: &[String]) -> String {
         let mut env: BTreeMap<&str, &str> = BTreeMap::new();

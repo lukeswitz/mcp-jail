@@ -1,13 +1,14 @@
 
 use crate::audit;
 use crate::canonical::{find_dangerous_flag, hash_file, SpawnRequest};
-use crate::cli::{ApproveArgs, Command, ExecArgs, InitArgs, LogsArgs, RevokeArgs, WrapArgs};
+use crate::cli::{ApproveArgs, Command, ExecArgs, InitArgs, LogsArgs, PruneArgs, RevokeArgs, WrapArgs};
 use crate::wrap;
 use crate::errors::JailError;
 use crate::sandbox;
 use crate::store::{
-    self, append_pending, clear_pending_for, ensure_key, load_allow, load_pending, save_allow,
-    sign_entry, verify_entry, AllowEntry, AllowList, PendingEntry, Paths, Sandbox, SourceConfig,
+    self, auto_prune_pending, clear_pending_for, ensure_key, load_allow, load_pending, save_allow,
+    sign_entry, upsert_pending, verify_entry, AllowEntry, AllowList, PendingEntry, Paths, Sandbox,
+    SourceConfig,
 };
 use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
@@ -22,6 +23,7 @@ pub fn dispatch(cmd: Command) -> Result<()> {
         Command::Approve(a) => cmd_approve(a),
         Command::List => cmd_list(),
         Command::Revoke(a) => cmd_revoke(a),
+        Command::Prune(a) => cmd_prune(a),
         Command::Logs(a) => cmd_logs(a),
         Command::Verify => cmd_verify(),
         Command::Check => cmd_check(),
@@ -739,11 +741,25 @@ fn cmd_approve(a: ApproveArgs) -> Result<()> {
         }
     }
 
+    // `--env NAME` at approve time would need the captured env VALUE to
+    // recompute a matching fingerprint. As of this build, values are
+    // redacted from `pending.jsonl` for security, so --env via pending
+    // would silently sign a mismatching fingerprint. Force the operator
+    // to bind env vars through `mcp-jail wrap` (which captures values
+    // directly) instead.
+    if !a.env.is_empty() {
+        return Err(anyhow!(
+            "--env is not supported on pending approvals (env values are redacted \
+             from pending.jsonl for security). Re-run `mcp-jail wrap` to bind env \
+             vars for an auto-discovered server, or edit allow.toml manually."
+        ));
+    }
+
     let id = a
         .id
         .unwrap_or_else(|| derive_id(&pending.request.argv, &pending.fingerprint));
 
-    let env_subset = a.env.clone();
+    let env_subset: Vec<String> = Vec::new();
 
     let source_config = match a.source_config.or(pending.request.source_config.clone()) {
         Some(p) => {
@@ -754,6 +770,12 @@ fn cmd_approve(a: ApproveArgs) -> Result<()> {
         None => None,
     };
 
+    // Recompute the fingerprint with an EMPTY env_subset to match what
+    // `evaluate()` will compute at spawn time (runtime also uses
+    // entry.env_subset, which is empty here). We don't reuse the stored
+    // pending.fingerprint because that one was computed via
+    // `fingerprint_full` (every env key), which wouldn't match runtime.
+    // `fingerprint(&[])` needs no env values — unaffected by redaction.
     let mut entry = AllowEntry {
         id: id.clone(),
         fingerprint: pending.request.fingerprint(&env_subset),
@@ -872,6 +894,10 @@ fn cmd_list() -> Result<()> {
     let paths = Paths::default();
     let allow = load_allow(&paths)?;
 
+    // Auto-prune anything older than PENDING_MAX_AGE_DAYS so the queue
+    // doesn't accumulate attack-replay cruft. Then drop entries that
+    // match a signed approval (argv was later allow-listed).
+    let age_pruned = auto_prune_pending(&paths)?;
     let mut pending = load_pending(&paths)?;
     let before = pending.len();
     pending.retain(|p| {
@@ -880,10 +906,11 @@ fn cmd_list() -> Result<()> {
             .iter()
             .any(|e| e.argv == p.request.argv && e.command == p.request.command)
     });
-    let pruned = before - pending.len();
-    if pruned > 0 {
+    let approve_pruned = before - pending.len();
+    if approve_pruned > 0 {
         store::save_pending(&paths, &pending)?;
     }
+    let pruned = age_pruned + approve_pruned;
 
     println!("# approved ({})", allow.entries.len());
     if allow.entries.is_empty() {
@@ -926,23 +953,82 @@ fn cmd_list() -> Result<()> {
     println!("secret path if you truly need it: mcp-jail approve <fp> --id <name> --fs-read-secret <path>");
 
     if !pending.is_empty() {
+        // Sort newest-last-seen first so interesting attempts surface.
+        let mut sorted = pending.clone();
+        sorted.sort_by(|a, b| {
+            let a_ts = a.last_seen.unwrap_or(a.ts);
+            let b_ts = b.last_seen.unwrap_or(b.ts);
+            b_ts.cmp(&a_ts)
+        });
+        let shown = 20usize;
         println!();
         println!("# pending ({})", pending.len());
-        for p in pending.iter().rev().take(20) {
-            println!(
-                "  {}  fp={}",
-                p.ts.format("%Y-%m-%d %H:%M:%S"),
-                &p.fingerprint[..12]
-            );
+        for p in sorted.iter().take(shown) {
+            let hits = p.hit_count.unwrap_or(1);
+            let last = p.last_seen.unwrap_or(p.ts);
+            let hits_suffix = if hits > 1 {
+                format!("  ({hits} hits, last {})", last.format("%Y-%m-%d %H:%M:%S"))
+            } else {
+                format!("  ({})", p.ts.format("%Y-%m-%d %H:%M:%S"))
+            };
+            println!("  fp={}{hits_suffix}", &p.fingerprint[..12]);
             println!("    argv: {}", format_argv(&p.request.argv));
         }
+        if pending.len() > shown {
+            println!("  … {} more — `mcp-jail prune --all` to clear the queue",
+                pending.len() - shown);
+        }
         println!();
-        println!("Approve with: mcp-jail approve <fp-prefix> --id <name>");
+        println!("Approve legitimate entries: mcp-jail approve <fp-prefix> --id <name>");
+        println!("Clear attack-replay cruft:  mcp-jail prune --all");
+        if pruned > 0 {
+            println!("(auto-pruned {pruned} stale entr{} this run)",
+                if pruned == 1 { "y" } else { "ies" });
+        }
     } else if pruned > 0 {
         println!();
-        println!("(pruned {pruned} stale pending entr{} now covered by approvals)",
+        println!("(pruned {pruned} stale pending entr{})",
             if pruned == 1 { "y" } else { "ies" });
     }
+    Ok(())
+}
+
+fn cmd_prune(a: PruneArgs) -> Result<()> {
+    let paths = Paths::default();
+    let all = load_pending(&paths).unwrap_or_default();
+    if all.is_empty() {
+        println!("pending queue is empty");
+        return Ok(());
+    }
+    let before = all.len();
+
+    // Scope: --fp > --older-than > --all (or default-all).
+    let kept: Vec<PendingEntry> = if let Some(prefix) = a.fingerprint.as_deref() {
+        if prefix.len() < 6 {
+            return Err(anyhow!("--fp prefix must be >=6 hex chars"));
+        }
+        all.into_iter()
+            .filter(|p| !p.fingerprint.starts_with(prefix))
+            .collect()
+    } else if let Some(days) = a.older_than {
+        if days < 0 {
+            return Err(anyhow!("--older-than must be >= 0"));
+        }
+        let cutoff = Utc::now() - chrono::Duration::days(days);
+        all.into_iter()
+            .filter(|p| p.last_seen.unwrap_or(p.ts) >= cutoff)
+            .collect()
+    } else {
+        // Default: wipe everything. `--all` is explicit-but-redundant.
+        let _ = a.all;
+        Vec::new()
+    };
+
+    let pruned = before - kept.len();
+    store::save_pending(&paths, &kept)?;
+    println!("pruned {pruned} pending entr{}, {} remaining",
+        if pruned == 1 { "y" } else { "ies" },
+        kept.len());
     Ok(())
 }
 
@@ -1064,13 +1150,17 @@ fn cmd_check() -> Result<()> {
             Ok(())
         }
         Err(reason) => {
-            append_pending(
+            let mut persisted = req.clone();
+            persisted.redact_env();
+            upsert_pending(
                 &paths,
-                &PendingEntry {
+                PendingEntry {
                     ts: Utc::now(),
                     fingerprint: fp_full.clone(),
-                    request: req.clone(),
+                    request: persisted,
                     reason: reason.clone(),
+                    last_seen: None,
+                    hit_count: None,
                 },
             )?;
             audit::append(
@@ -1204,13 +1294,17 @@ fn cmd_exec(a: ExecArgs) -> Result<()> {
         }
         Err(reason) => {
             let fp = req.fingerprint_full();
-            append_pending(
+            let mut persisted = req.clone();
+            persisted.redact_env();
+            upsert_pending(
                 &paths,
-                &crate::store::PendingEntry {
+                crate::store::PendingEntry {
                     ts: Utc::now(),
                     fingerprint: fp.clone(),
-                    request: req.clone(),
+                    request: persisted,
                     reason: reason.clone(),
+                    last_seen: None,
+                    hit_count: None,
                 },
             )?;
             audit::append(

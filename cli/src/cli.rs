@@ -21,6 +21,8 @@ pub enum Command {
     List,
     /// Remove an approval.
     Revoke(RevokeArgs),
+    /// Drop entries from the pending queue. Default: all. Use flags to scope.
+    Prune(PruneArgs),
     /// Show the audit log (every allow/deny decision).
     Logs(LogsArgs),
     /// Self-check: key present, signatures valid, sandbox helper available.
@@ -113,6 +115,19 @@ pub struct ApproveArgs {
 #[derive(Parser)]
 pub struct RevokeArgs {
     pub id: String,
+}
+
+#[derive(Parser)]
+pub struct PruneArgs {
+    /// Drop every pending entry. Default when no other flag is given.
+    #[arg(long)]
+    pub all: bool,
+    /// Drop pending entries older than N days.
+    #[arg(long = "older-than", value_name = "DAYS")]
+    pub older_than: Option<i64>,
+    /// Drop the pending entry matching this fingerprint prefix.
+    #[arg(long = "fp", value_name = "HEX")]
+    pub fingerprint: Option<String>,
 }
 
 #[derive(Parser)]
