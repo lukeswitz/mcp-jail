@@ -23,6 +23,9 @@ pub enum Command {
     Revoke(RevokeArgs),
     /// Drop entries from the pending queue. Default: all. Use flags to scope.
     Prune(PruneArgs),
+    /// One-line summary — print "N pending" if any, else silent. Drop-in
+    /// for shell prompts (`PROMPT_COMMAND`/`precmd`) and status bars.
+    Status,
     /// Show the audit log (every allow/deny decision).
     Logs(LogsArgs),
     /// Self-check: key present, signatures valid, sandbox helper available.

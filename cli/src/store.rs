@@ -149,19 +149,26 @@ pub fn save_allow(paths: &Paths, allow: &AllowList) -> Result<()> {
 /// exists, bump its `last_seen` + `hit_count`; otherwise append. Always
 /// writes the file back with mode 0600 so leaked env-var redaction is
 /// backed by strict filesystem permissions.
-pub fn upsert_pending(paths: &Paths, mut entry: PendingEntry) -> Result<()> {
+///
+/// Returns `true` when the fingerprint was new to the queue. Callers use
+/// that signal to fire a desktop notification only the first time, so
+/// retries from a misbehaving MCP client don't spam the user.
+pub fn upsert_pending(paths: &Paths, mut entry: PendingEntry) -> Result<bool> {
     let mut all = load_pending(paths).unwrap_or_default();
     let now = entry.ts;
     if let Some(existing) = all.iter_mut().find(|p| p.fingerprint == entry.fingerprint) {
         existing.last_seen = Some(now);
         existing.hit_count = Some(existing.hit_count.unwrap_or(1).saturating_add(1));
         existing.reason = entry.reason;
+        save_pending(paths, &all)?;
+        Ok(false)
     } else {
         entry.last_seen = Some(now);
         entry.hit_count = Some(1);
         all.push(entry);
+        save_pending(paths, &all)?;
+        Ok(true)
     }
-    save_pending(paths, &all)
 }
 
 pub fn load_pending(paths: &Paths) -> Result<Vec<PendingEntry>> {

@@ -24,6 +24,7 @@ pub fn dispatch(cmd: Command) -> Result<()> {
         Command::List => cmd_list(),
         Command::Revoke(a) => cmd_revoke(a),
         Command::Prune(a) => cmd_prune(a),
+        Command::Status => cmd_status(),
         Command::Logs(a) => cmd_logs(a),
         Command::Verify => cmd_verify(),
         Command::Check => cmd_check(),
@@ -350,11 +351,11 @@ fn trusted_sandbox_for(argv: &[String]) -> Sandbox {
     } else {
         sb.net.push("127.0.0.1".into());
     }
-    if is_ssh_command(argv) {
-        if let Ok(home) = std::env::var("HOME") {
-            for f in ["id_ed25519", "id_rsa", "id_ecdsa", "id_dsa", "config", "known_hosts"] {
-                sb.fs_read_secret.push(format!("{home}/.ssh/{f}"));
-            }
+    if is_ssh_command(argv)
+        && let Ok(home) = std::env::var("HOME")
+    {
+        for f in ["id_ed25519", "id_rsa", "id_ecdsa", "id_dsa", "config", "known_hosts"] {
+            sb.fs_read_secret.push(format!("{home}/.ssh/{f}"));
         }
     }
     sb
@@ -719,9 +720,12 @@ fn cmd_approve(a: ApproveArgs) -> Result<()> {
     paths.ensure()?;
     let key = ensure_key(&paths)?;
 
-    let fp = a
-        .fingerprint
-        .ok_or_else(|| anyhow!("provide a fingerprint prefix (>=6 hex chars)"))?;
+    // No fp supplied → walk every pending entry one at a time on the TTY.
+    // Makes "quick approval" a single command with no fingerprint-pasting.
+    let fp = match a.fingerprint {
+        Some(f) => f,
+        None => return cmd_approve_interactive(&paths, &key),
+    };
     if fp.len() < 6 {
         return Err(anyhow!("fingerprint prefix must be >=6 chars"));
     }
@@ -733,12 +737,12 @@ fn cmd_approve(a: ApproveArgs) -> Result<()> {
         .cloned()
         .ok_or_else(|| anyhow!("no pending entry matching `{fp}`"))?;
 
-    if !a.dangerous {
-        if let Some(flag) = find_dangerous_flag(&pending.request.argv) {
-            return Err(anyhow!(
-                "argv contains interpreter-eval flag `{flag}`; re-run with --dangerous to allow"
-            ));
-        }
+    if !a.dangerous
+        && let Some(flag) = find_dangerous_flag(&pending.request.argv)
+    {
+        return Err(anyhow!(
+            "argv contains interpreter-eval flag `{flag}`; re-run with --dangerous to allow"
+        ));
     }
 
     // `--env NAME` at approve time would need the captured env VALUE to
@@ -821,6 +825,121 @@ fn cmd_approve(a: ApproveArgs) -> Result<()> {
     Ok(())
 }
 
+/// Walk every pending entry on the TTY: show argv, ask A/s/d/q. Approving
+/// picks a sensible sandbox (trusted-defaults for network-looking commands
+/// else loopback-only). Skipping leaves the entry for later. Deleting drops
+/// it. Refuses interpreter-eval argvs without `--dangerous` (operator must
+/// intentionally re-run with a fingerprint + `--dangerous` for those).
+fn cmd_approve_interactive(paths: &Paths, key: &ed25519_dalek::SigningKey) -> Result<()> {
+    use std::io::{BufRead, IsTerminal, Write};
+
+    let pending = load_pending(paths)?;
+    if pending.is_empty() {
+        println!("No pending approvals.");
+        return Ok(());
+    }
+    if !std::io::stdin().is_terminal() {
+        eprintln!(
+            "{} pending — run `mcp-jail approve` from a terminal to review interactively.",
+            pending.len()
+        );
+        for p in &pending {
+            eprintln!("  fp={}  argv={}", &p.fingerprint[..12], format_argv(&p.request.argv));
+        }
+        return Ok(());
+    }
+
+    let mut allow = load_allow(paths)?;
+    let mut approved = 0usize;
+    let mut skipped = 0usize;
+    let mut deleted = 0usize;
+    let total = pending.len();
+
+    println!("{total} pending approval(s). Press Enter to approve each, or type s/d/q.");
+    println!();
+
+    for (idx, p) in pending.iter().enumerate() {
+        println!("── \x1b[1m[{}/{total}]\x1b[0m  fp={}", idx + 1, &p.fingerprint[..12]);
+        println!("   cmd: {}", format_argv(&p.request.argv));
+        let hits = p.hit_count.unwrap_or(1);
+        if hits > 1 {
+            println!("   ({hits} blocked attempts, last seen {})",
+                p.last_seen.unwrap_or(p.ts).format("%Y-%m-%d %H:%M:%S"));
+        }
+        if let Some(flag) = find_dangerous_flag(&p.request.argv) {
+            println!("   \x1b[33m⚠  argv uses interpreter-eval flag `{flag}`.\x1b[0m");
+            println!("   \x1b[33m   Skipping — re-run with: mcp-jail approve {} --dangerous\x1b[0m",
+                &p.fingerprint[..12]);
+            skipped += 1;
+            println!();
+            continue;
+        }
+
+        print!("   [A]pprove / [s]kip / [d]elete / [q]uit > ");
+        std::io::stdout().flush().ok();
+        let mut line = String::new();
+        if std::io::stdin().lock().read_line(&mut line).is_err() {
+            break;
+        }
+        match line.trim().chars().next().unwrap_or('a').to_ascii_lowercase() {
+            'q' => break,
+            's' => { skipped += 1; }
+            'd' => {
+                store::clear_pending_for(paths, &p.fingerprint).ok();
+                deleted += 1;
+            }
+            _ => {
+                let id = derive_id(&p.request.argv, &p.fingerprint);
+                let sandbox = trusted_sandbox_for(&p.request.argv);
+                let source_config = p.request.source_config.as_deref().and_then(|path| {
+                    hash_file(std::path::Path::new(path)).map(|hash| SourceConfig {
+                        path: path.to_owned(),
+                        hash,
+                    })
+                });
+                let mut entry = AllowEntry {
+                    id: id.clone(),
+                    fingerprint: p.request.fingerprint(&[]),
+                    argv: p.request.argv.clone(),
+                    command: p.request.command.clone(),
+                    cwd: p.request.cwd.clone(),
+                    env_subset: Vec::new(),
+                    dangerous: false,
+                    source_config,
+                    sandbox,
+                    signed_at: Utc::now(),
+                    signature: String::new(),
+                };
+                sign_entry(key, &mut entry)?;
+                sandbox::write_profile(&paths.root, &entry)?;
+                allow.entries.retain(|e| e.id != entry.id);
+                allow.entries.push(entry.clone());
+                save_allow(paths, &allow)?;
+                store::clear_pending_for(paths, &p.fingerprint).ok();
+                audit::append(
+                    &paths.audit,
+                    audit::Record {
+                        ts: Utc::now(),
+                        prev_hash: String::new(),
+                        decision: "approve".to_owned(),
+                        fingerprint: entry.fingerprint.clone(),
+                        id: Some(entry.id.clone()),
+                        reason: "interactive approval".to_owned(),
+                        pid: process::id(),
+                        this_hash: String::new(),
+                    },
+                )?;
+                println!("   ✓ approved as `{id}`");
+                approved += 1;
+            }
+        }
+        println!();
+    }
+
+    println!("Done. {approved} approved, {skipped} skipped, {deleted} deleted.");
+    Ok(())
+}
+
 fn needs_network(argv: &[String]) -> bool {
     let Some(cmd) = argv.first() else { return false };
     let base = std::path::Path::new(cmd)
@@ -834,10 +953,10 @@ fn needs_network(argv: &[String]) -> bool {
 }
 
 fn shorten_home(s: &str) -> String {
-    if let Some(home) = dirs::home_dir().and_then(|p| p.to_str().map(str::to_owned)) {
-        if let Some(rest) = s.strip_prefix(&home) {
-            return format!("~{rest}");
-        }
+    if let Some(home) = dirs::home_dir().and_then(|p| p.to_str().map(str::to_owned))
+        && let Some(rest) = s.strip_prefix(&home)
+    {
+        return format!("~{rest}");
     }
     s.to_owned()
 }
@@ -991,6 +1110,25 @@ fn cmd_list() -> Result<()> {
             if pruned == 1 { "y" } else { "ies" });
     }
     Ok(())
+}
+
+/// Terse one-liner, safe to call from a shell prompt hook. Silent when
+/// nothing is pending so prompts stay clean. When pending entries exist,
+/// prints a yellow warning line and exits non-zero so status-bar widgets
+/// can color themselves red.
+fn cmd_status() -> Result<()> {
+    let paths = Paths::default();
+    let _ = auto_prune_pending(&paths);
+    let pending = load_pending(&paths).unwrap_or_default();
+    if pending.is_empty() {
+        return Ok(());
+    }
+    let word = if pending.len() == 1 { "server" } else { "servers" };
+    eprintln!(
+        "\x1b[33m⚠  {} MCP {word} awaiting mcp-jail approval — run `mcp-jail approve`\x1b[0m",
+        pending.len()
+    );
+    std::process::exit(2);
 }
 
 fn cmd_prune(a: PruneArgs) -> Result<()> {
@@ -1152,7 +1290,7 @@ fn cmd_check() -> Result<()> {
         Err(reason) => {
             let mut persisted = req.clone();
             persisted.redact_env();
-            upsert_pending(
+            let is_new = upsert_pending(
                 &paths,
                 PendingEntry {
                     ts: Utc::now(),
@@ -1163,6 +1301,9 @@ fn cmd_check() -> Result<()> {
                     hit_count: None,
                 },
             )?;
+            if is_new {
+                crate::notify::blocked_spawn(&req.argv, &fp_full);
+            }
             audit::append(
                 &paths.audit,
                 audit::Record {
@@ -1203,10 +1344,10 @@ fn evaluate<'a>(allow: &'a AllowList, req: &SpawnRequest) -> Result<&'a AllowEnt
                 entry.id
             ));
         }
-        if !entry.dangerous {
-            if let Some(flag) = find_dangerous_flag(&req.argv) {
-                return Err(JailError::DangerousFlag(flag).to_string());
-            }
+        if !entry.dangerous
+            && let Some(flag) = find_dangerous_flag(&req.argv)
+        {
+            return Err(JailError::DangerousFlag(flag).to_string());
         }
         return Ok(entry);
     }

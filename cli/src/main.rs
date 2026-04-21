@@ -5,6 +5,7 @@ mod canonical;
 mod cli;
 mod commands;
 mod errors;
+mod notify;
 mod sandbox;
 mod store;
 mod wrap;
