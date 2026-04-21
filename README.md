@@ -54,7 +54,7 @@ mcp-jail init
 ```
 
 Installer env overrides:
-- `MCP_JAIL_VERSION=v0.1.2` — pin a release
+- `MCP_JAIL_VERSION=v0.2.0` — pin a release
 - `MCP_JAIL_PREFIX=$HOME/.local` — install without sudo
 
 </details>
