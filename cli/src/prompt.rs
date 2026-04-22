@@ -67,13 +67,22 @@ mod macos {
             .replace('\\', "\\\\")
             .replace('"', "\\\"");
 
+        // tell System Events so the modal comes to the foreground even when
+        // we're spawned as a background subprocess of an MCP client.
         let script = format!(
-            "display alert \"mcp-jail: new MCP server\" message \"{message}\" \
+            "tell application \"System Events\" to activate\n\
+             display alert \"mcp-jail: new MCP server\" message \"{message}\" \
              buttons {{\"Deny\", \"Approve\"}} default button \"Deny\" cancel button \"Deny\" \
              as critical giving up after {TIMEOUT_SECS}"
         );
 
-        let Ok(out) = Command::new("/usr/bin/osascript").args(["-e", &script]).output() else {
+        // Re-enter user's Aqua GUI session via `launchctl asuser` so the
+        // modal actually renders when spawned from an MCP host subprocess.
+        let uid = format!("{}", unsafe { libc::getuid() });
+        let Ok(out) = Command::new("launchctl")
+            .args(["asuser", &uid, "/usr/bin/osascript", "-e", &script])
+            .output()
+        else {
             return Decision::NoGui;
         };
         let stdout = String::from_utf8_lossy(&out.stdout);

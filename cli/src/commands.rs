@@ -1000,10 +1000,10 @@ fn format_fs_read(items: &[String], secrets: &[String]) -> String {
     let mut extra: Vec<String> = items.iter().map(|s| shorten_home(s)).collect();
     extra.extend(secrets.iter().map(|s| format!("{} (override)", shorten_home(s))));
     if extra.is_empty() {
-        "fs_read:  most paths OK; blocks your machines local creds only (~/.ssh, ~/.aws, Keychains, etc.)".into()
+        "fs_read:  default — host creds blocked (~/.ssh, ~/.aws, Keychains)".into()
     } else {
         format!(
-            "fs_read:  most paths OK; blocks your machines local creds; explicit grants: {}",
+            "fs_read:  default + grants: {}",
             extra.join(", ")
         )
     }
@@ -1456,7 +1456,7 @@ fn cmd_exec(a: ExecArgs) -> Result<()> {
 
             let mut persisted = req.clone();
             persisted.redact_env();
-            upsert_pending(
+            let is_new = upsert_pending(
                 &paths,
                 crate::store::PendingEntry {
                     ts: Utc::now(),
@@ -1467,6 +1467,9 @@ fn cmd_exec(a: ExecArgs) -> Result<()> {
                     hit_count: None,
                 },
             )?;
+            if is_new {
+                crate::notify::blocked_spawn(&argv, &fp);
+            }
 
             if !dangerous {
                 match crate::prompt::ask(&argv, a.source_config.as_deref()) {
