@@ -23,6 +23,7 @@ fn current_exe() -> Result<PathBuf> {
     Ok(std::fs::canonicalize(&p).unwrap_or(p))
 }
 
+#[cfg(target_os = "macos")]
 fn xml_escape(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }
@@ -482,11 +483,12 @@ while ($true) {{ Start-Sleep -Seconds 3600 }}
     }
 
     pub fn uninstall() -> Result<()> {
-        let removed = [TASK_PERIODIC, TASK_WATCHER]
-            .iter()
-            .filter(|t| task_exists(t))
-            .map(|t| schtasks(&["/Delete", "/TN", t, "/F"]).ok())
-            .count();
+        let mut removed = 0usize;
+        for t in [TASK_PERIODIC, TASK_WATCHER] {
+            if task_exists(t) && schtasks(&["/Delete", "/TN", t, "/F"]).is_ok() {
+                removed += 1;
+            }
+        }
         if removed == 0 {
             println!("sentry not installed");
         } else {

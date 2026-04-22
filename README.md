@@ -105,7 +105,7 @@ cargo install --path cli --locked
 mcp-jail init && mcp-jail wrap && mcp-jail sentry install
 ```
 
-Installer env overrides: `MCP_JAIL_VERSION=v0.2.2` to pin, `MCP_JAIL_PREFIX=$HOME/.local` to install without sudo.
+Installer env overrides: `MCP_JAIL_VERSION=v0.2.3` to pin, `MCP_JAIL_PREFIX=$HOME/.local` to install without sudo.
 
 Prebuilt binaries on [Releases](https://github.com/lukeswitz/mcp-jail/releases): `aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `x86_64-pc-windows-msvc`, each with a `.sha256` sidecar.
 
