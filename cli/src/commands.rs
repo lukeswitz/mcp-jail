@@ -1,10 +1,14 @@
 
 use crate::audit;
 use crate::canonical::{find_dangerous_flag, hash_file, SpawnRequest};
-use crate::cli::{ApproveArgs, Command, ExecArgs, InitArgs, LogsArgs, PruneArgs, RevokeArgs, WrapArgs};
+use crate::cli::{
+    ApproveArgs, Command, DoctorArgs, ExecArgs, InitArgs, LogsArgs, PruneArgs, RevokeArgs,
+    SentryArgs, WrapArgs,
+};
 use crate::wrap;
 use crate::errors::JailError;
 use crate::sandbox;
+use crate::sentry;
 use crate::store::{
     self, auto_prune_pending, clear_pending_for, ensure_key, load_allow, load_pending, save_allow,
     sign_entry, upsert_pending, verify_entry, AllowEntry, AllowList, PendingEntry, Paths, Sandbox,
@@ -32,11 +36,16 @@ pub fn dispatch(cmd: Command) -> Result<()> {
         Command::Upgrade => cmd_upgrade(),
         Command::Wrap(a) => cmd_wrap(a, false),
         Command::Unwrap(a) => cmd_wrap(a, true),
-        Command::Doctor => cmd_doctor(),
+        Command::Doctor(a) => cmd_doctor(a),
+        Command::Sentry(a) => cmd_sentry(a),
     }
 }
 
-fn cmd_doctor() -> Result<()> {
+fn cmd_sentry(a: SentryArgs) -> Result<()> {
+    sentry::dispatch(a.action)
+}
+
+fn cmd_doctor(args: DoctorArgs) -> Result<()> {
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
@@ -229,12 +238,20 @@ fn cmd_doctor() -> Result<()> {
     println!();
     if problems == 0 && warnings == 0 {
         println!("\x1b[32mAll healthy.\x1b[0m");
-    } else if problems == 0 {
+        return Ok(());
+    }
+
+    if problems == 0 {
         println!("\x1b[33m{warnings} warning(s).\x1b[0m OK to use; see above.");
     } else {
-        println!(
-            "\x1b[31m{problems} problem(s), {warnings} warning(s).\x1b[0m"
-        );
+        println!("\x1b[31m{problems} problem(s), {warnings} warning(s).\x1b[0m");
+    }
+
+    if args.notify {
+        crate::notify::health_alert(problems, warnings);
+    }
+
+    if problems > 0 && !args.soft_fail {
         return Err(anyhow!("{problems} health check(s) failed"));
     }
     Ok(())
@@ -1391,7 +1408,7 @@ fn cmd_exec(a: ExecArgs) -> Result<()> {
     let paths = Paths::default();
     paths.ensure()?;
 
-    let argv = a.argv;
+    let argv = a.argv.clone();
     if argv.is_empty() {
         return Err(anyhow!("`exec --` requires at least one argument"));
     }
@@ -1435,6 +1452,8 @@ fn cmd_exec(a: ExecArgs) -> Result<()> {
         }
         Err(reason) => {
             let fp = req.fingerprint_full();
+            let dangerous = find_dangerous_flag(&argv).is_some();
+
             let mut persisted = req.clone();
             persisted.redact_env();
             upsert_pending(
@@ -1448,6 +1467,18 @@ fn cmd_exec(a: ExecArgs) -> Result<()> {
                     hit_count: None,
                 },
             )?;
+
+            if !dangerous {
+                match crate::prompt::ask(&argv, a.source_config.as_deref()) {
+                    crate::prompt::Decision::Approve => {
+                        return approve_and_exec(&paths, &req, &a);
+                    }
+                    crate::prompt::Decision::Deny
+                    | crate::prompt::Decision::Timeout
+                    | crate::prompt::Decision::NoGui => {}
+                }
+            }
+
             audit::append(
                 &paths.audit,
                 audit::Record {
@@ -1461,12 +1492,100 @@ fn cmd_exec(a: ExecArgs) -> Result<()> {
                     this_hash: String::new(),
                 },
             )?;
-            eprintln!("mcp-jail: blocked exec of {:?}", argv);
-            eprintln!("  reason: {reason}");
-            eprintln!("  hint:   mcp-jail approve {}", &fp[..12]);
+
+            let fp12 = &fp[..12];
+            let src = a.source_config.as_deref().unwrap_or("(unknown)");
+            eprintln!("mcp-jail: blocked new MCP server");
+            eprintln!("  command:     {}", argv.join(" "));
+            eprintln!("  source:      {src}");
+            eprintln!("  fingerprint: {fp12}");
+            eprintln!();
+            if dangerous {
+                eprintln!("Argv uses an interpreter-eval flag (`-c`, `-e`, `/c`).");
+                eprintln!("Manual approval required:");
+                eprintln!("  mcp-jail approve {fp12} --dangerous  (and add sandbox flags)");
+            } else {
+                eprintln!("Approve this server (walks pending one at a time):");
+                eprintln!("  mcp-jail approve");
+            }
+            eprintln!();
+            eprintln!("Review or tune:");
+            eprintln!("  mcp-jail list");
+            eprintln!("  mcp-jail approve --help");
             std::process::exit(126);
         }
     }
+}
+
+fn approve_and_exec(
+    paths: &Paths,
+    req: &SpawnRequest,
+    a: &ExecArgs,
+) -> Result<()> {
+    let key = ensure_key(paths)?;
+    let fp = req.fingerprint(&[]);
+    let id = a.id.clone().unwrap_or_else(|| derive_id(&req.argv, &fp));
+    let sandbox = trusted_sandbox_for(&req.argv);
+    let source_config = a
+        .source_config
+        .clone()
+        .or_else(|| req.source_config.clone())
+        .map(|p| SourceConfig {
+            path: p,
+            hash: String::new(),
+        });
+    let mut entry = AllowEntry {
+        id,
+        fingerprint: fp,
+        argv: req.argv.clone(),
+        command: req.command.clone(),
+        cwd: String::new(),
+        env_subset: Vec::new(),
+        dangerous: false,
+        source_config,
+        sandbox,
+        signed_at: Utc::now(),
+        signature: String::new(),
+    };
+    sign_entry(&key, &mut entry)?;
+
+    let mut allow = load_allow(paths)?;
+    allow.entries.retain(|e| e.id != entry.id);
+    allow.entries.push(entry.clone());
+    save_allow(paths, &allow)?;
+    clear_pending_for(paths, &entry.fingerprint)?;
+
+    audit::append(
+        &paths.audit,
+        audit::Record {
+            ts: Utc::now(),
+            prev_hash: String::new(),
+            decision: "approve".to_owned(),
+            fingerprint: entry.fingerprint.clone(),
+            id: Some(entry.id.clone()),
+            reason: "user approved via modal".to_owned(),
+            pid: process::id(),
+            this_hash: String::new(),
+        },
+    )?;
+
+    let profile = sandbox::write_profile(&paths.root, &entry)?;
+    let wrapped = sandbox::wrap_argv(&profile, &entry.command, &entry.argv)?;
+    audit::append(
+        &paths.audit,
+        audit::Record {
+            ts: Utc::now(),
+            prev_hash: String::new(),
+            decision: "allow".to_owned(),
+            fingerprint: entry.fingerprint.clone(),
+            id: Some(entry.id.clone()),
+            reason: "modal-approved, first exec".to_owned(),
+            pid: process::id(),
+            this_hash: String::new(),
+        },
+    )?;
+    exec_or_die(&wrapped, &entry.env_subset)?;
+    unreachable!()
 }
 
 #[cfg(unix)]

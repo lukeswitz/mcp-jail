@@ -166,12 +166,28 @@ offer_wrap() {
   fi
 }
 
+install_sentry() {
+  have mcp-jail || return 0
+  if [[ "${MCP_JAIL_NO_SENTRY:-}" == "1" ]]; then
+    return 0
+  fi
+  local os
+  os="$(uname -s)"
+  case "$os" in
+    Darwin|Linux) ;;
+    *) return 0 ;;
+  esac
+  log "installing integrity watchdog (mcp-jail sentry)"
+  mcp-jail sentry install || warn "sentry install returned non-zero — run \`mcp-jail sentry install\` to retry"
+}
+
 main() {
   have curl || die "curl is required"
   install_binary
   export PATH="$BIN_DIR:$PATH"
   run_init
   offer_wrap
+  install_sentry
 }
 
 main "$@"

@@ -52,6 +52,45 @@ fn mac_notify(short_cmd: &str, fp_prefix: &str) {
         .spawn();
 }
 
+pub fn health_alert(problems: usize, warnings: usize) {
+    if std::env::var("MCP_JAIL_NOTIFY").as_deref() == Ok("0") {
+        return;
+    }
+    let title = if problems > 0 { "mcp-jail unhealthy" } else { "mcp-jail warnings" };
+    let body = format!(
+        "{problems} problem(s), {warnings} warning(s). Run `mcp-jail doctor` for details."
+    );
+
+    #[cfg(target_os = "macos")]
+    {
+        let script = format!(
+            "display notification \"{body}\" with title \"{title}\" sound name \"Funk\"",
+            body = body.replace('"', "'"),
+            title = title.replace('"', "'"),
+        );
+        let _ = std::process::Command::new("osascript")
+            .args(["-e", &script])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let urgency = if problems > 0 { "critical" } else { "normal" };
+        let _ = std::process::Command::new("notify-send")
+            .args(["-a", "mcp-jail", "-u", urgency, title, &body])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (title, body);
+    }
+}
+
 #[cfg(all(unix, not(target_os = "macos")))]
 fn linux_notify(short_cmd: &str, fp_prefix: &str) {
     let title = format!("mcp-jail blocked: {short_cmd}");

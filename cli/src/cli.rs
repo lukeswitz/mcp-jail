@@ -33,11 +33,49 @@ pub enum Command {
     /// Re-run the install script to upgrade mcp-jail.
     Upgrade,
     /// Health check: state dir, key, signatures, sandbox helper, pending approvals, version check.
-    Doctor,
+    Doctor(DoctorArgs),
+    /// Install, uninstall, or check the platform-native integrity
+    /// watchdog that alerts when mcp-jail is missing, tampered, or
+    /// unhealthy. Uses launchd (macOS) / systemd (Linux).
+    Sentry(SentryArgs),
     #[command(hide = true)]
     Exec(ExecArgs),
     #[command(hide = true)]
     Check,
+}
+
+#[derive(Parser)]
+pub struct DoctorArgs {
+    /// Fire a desktop notification on the first problem/warning in
+    /// addition to printing to stdout. Intended for unattended
+    /// invocations from the sentry watchdog.
+    #[arg(long)]
+    pub notify: bool,
+    /// Exit 0 even when problems are found. For monitoring contexts
+    /// that treat non-zero exits as hard failures but still want the
+    /// notification side effect.
+    #[arg(long = "soft-fail")]
+    pub soft_fail: bool,
+}
+
+#[derive(Parser)]
+pub struct SentryArgs {
+    #[command(subcommand)]
+    pub action: SentryAction,
+}
+
+#[derive(Subcommand)]
+pub enum SentryAction {
+    /// Install and load the integrity watchdog. Runs `mcp-jail doctor
+    /// --notify` every 5 minutes and on filesystem events against the
+    /// mcp-jail binary itself (launchd `WatchPaths` / systemd `.path`).
+    /// A shell wrapper fires a platform notification directly if the
+    /// binary is gone — solving the dead-man's-switch problem.
+    Install,
+    /// Unload and remove the watchdog.
+    Uninstall,
+    /// Report whether the watchdog is installed and loaded.
+    Status,
 }
 
 #[derive(Parser)]

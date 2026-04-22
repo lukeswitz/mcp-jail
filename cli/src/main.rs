@@ -6,7 +6,9 @@ mod cli;
 mod commands;
 mod errors;
 mod notify;
+mod prompt;
 mod sandbox;
+mod sentry;
 mod store;
 mod wrap;
 
