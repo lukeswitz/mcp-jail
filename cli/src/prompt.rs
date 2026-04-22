@@ -2,11 +2,13 @@
 
 use std::process::Command;
 
+#[cfg(unix)]
 const TIMEOUT_SECS: u64 = 60;
 
 pub enum Decision {
     Approve,
     Deny,
+    #[allow(dead_code)]
     Timeout,
     NoGui,
 }

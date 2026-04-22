@@ -7,7 +7,9 @@ use std::path::PathBuf;
 
 use crate::cli::SentryAction;
 
+#[cfg(unix)]
 const SERVICE_LABEL: &str = "com.lukeswitz.mcp-jail.sentry";
+#[cfg(unix)]
 const CHECK_INTERVAL_SECS: u32 = 300;
 
 pub fn dispatch(action: SentryAction) -> Result<()> {
