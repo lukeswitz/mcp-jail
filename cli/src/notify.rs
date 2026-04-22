@@ -12,20 +12,22 @@
 use std::io::Write;
 use std::path::Path;
 
-pub fn blocked_spawn(argv: &[String], fingerprint: &str) {
+pub fn blocked_spawn_log(argv: &[String], fingerprint: &str) {
+    print_stderr_banner(argv, fingerprint);
+    let _ = append_alert_log(argv, fingerprint);
+    let _ = append_pending_log(argv, fingerprint);
+}
+
+pub fn blocked_spawn_notify(argv: &[String], fingerprint: &str) {
+    if std::env::var("MCP_JAIL_NOTIFY").as_deref() == Ok("0") {
+        return;
+    }
     let short_cmd = argv
         .first()
         .and_then(|s| Path::new(s).file_name().and_then(|n| n.to_str()))
         .or_else(|| argv.first().map(String::as_str))
         .unwrap_or("unknown");
     let fp_prefix = &fingerprint[..12.min(fingerprint.len())];
-
-    // Always persist — this is what the user will actually see.
-    let _ = append_alert_log(argv, fingerprint);
-
-    if std::env::var("MCP_JAIL_NOTIFY").as_deref() == Ok("0") {
-        return;
-    }
 
     #[cfg(target_os = "macos")]
     mac_notify(short_cmd, fp_prefix);
@@ -39,8 +41,58 @@ pub fn blocked_spawn(argv: &[String], fingerprint: &str) {
     }
 }
 
+pub fn blocked_spawn(argv: &[String], fingerprint: &str) {
+    blocked_spawn_log(argv, fingerprint);
+    blocked_spawn_notify(argv, fingerprint);
+}
+
 const ALERT_LOG_MAX_BYTES: u64 = 1_048_576;
 const ALERT_LOG_ARGV_MAX: usize = 512;
+
+/// Marker string the test-suite greps for to confirm the banner fired.
+pub const STDERR_BANNER_MARKER: &str = "MCP-JAIL-BLOCK-BANNER";
+
+fn print_stderr_banner(argv: &[String], fingerprint: &str) {
+    let ts = chrono::Utc::now().to_rfc3339();
+    let fp12 = &fingerprint[..12.min(fingerprint.len())];
+    let mut joined = argv.join(" ");
+    if joined.len() > 240 {
+        joined.truncate(240);
+        joined.push('…');
+    }
+    eprintln!("\n╔══════════════════════════════════════════════════════════════════╗");
+    eprintln!("║  {STDERR_BANNER_MARKER}  mcp-jail BLOCKED an MCP spawn            ║");
+    eprintln!("╠══════════════════════════════════════════════════════════════════╣");
+    eprintln!("║  time: {ts}");
+    eprintln!("║  argv: {joined}");
+    eprintln!("║  fp:   {fp12}");
+    eprintln!("║  approve: mcp-jail approve {fp12}");
+    eprintln!("╚══════════════════════════════════════════════════════════════════╝");
+}
+
+/// Append a structured line to the pending-log channel so the user
+/// always has a forensic trail independent of desktop notifications.
+fn append_pending_log(argv: &[String], fingerprint: &str) -> std::io::Result<()> {
+    let Some(home) = dirs::home_dir() else {
+        return Ok(());
+    };
+    let dir = home.join(".mcp-jail");
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join("pending.log");
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = f.set_permissions(std::fs::Permissions::from_mode(0o600));
+    }
+    let ts = chrono::Utc::now().to_rfc3339();
+    let fp12 = &fingerprint[..12.min(fingerprint.len())];
+    let joined = argv.join(" ");
+    writeln!(f, "{ts}\tBLOCKED\tfp={fp12}\targv={joined}")
+}
 
 fn append_alert_log(argv: &[String], fingerprint: &str) -> std::io::Result<()> {
     let Some(home) = dirs::home_dir() else {
@@ -80,7 +132,10 @@ fn append_alert_log(argv: &[String], fingerprint: &str) -> std::io::Result<()> {
 #[cfg(target_os = "macos")]
 fn mac_notify(short_cmd: &str, fp_prefix: &str) {
     let title = format!("mcp-jail blocked: {}", short_cmd.replace('"', "'"));
-    let body = format!("Run `mcp-jail approve` to review (fp {fp_prefix})");
+    let body = format!("Click to open Terminal and approve (fp {fp_prefix})");
+    let execute = format!(
+        "osascript -e 'tell application \"Terminal\" to activate' -e 'tell application \"Terminal\" to do script \"mcp-jail approve {fp_prefix}\"'"
+    );
 
     // When spawned as a subprocess of an MCP host (Claude Code, Cursor,
     // etc.), this process lives OUTSIDE the user's Aqua GUI session. The
@@ -103,6 +158,7 @@ fn mac_notify(short_cmd: &str, fp_prefix: &str) {
                 "-message", &body,
                 "-sound", "Funk",
                 "-group", "mcp-jail",
+                "-execute", &execute,
             ])
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
@@ -111,9 +167,12 @@ fn mac_notify(short_cmd: &str, fp_prefix: &str) {
         return;
     }
 
+    let fallback_body = format!(
+        "Open Terminal and run: mcp-jail approve {fp_prefix}"
+    );
     let script = format!(
         "display notification \"{body}\" with title \"{title}\" sound name \"Funk\"",
-        body = body.replace('"', "'"),
+        body = fallback_body.replace('"', "'"),
         title = title.replace('"', "'"),
     );
     let _ = std::process::Command::new("launchctl")

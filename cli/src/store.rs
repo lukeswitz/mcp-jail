@@ -32,8 +32,22 @@ pub struct AllowEntry {
     pub source_config: Option<SourceConfig>,
     #[serde(default)]
     pub sandbox: Sandbox,
+    /// Content-hash bindings for argv[1..] elements that resolved to a
+    /// regular file at approve time. Refuses exec if any file's hash no
+    /// longer matches — defeats TOCTOU on script paths like
+    /// `python3 /opt/server.py`.
+    #[serde(default)]
+    pub argv_file_hashes: Vec<ArgvFileHash>,
     pub signed_at: DateTime<Utc>,
     pub signature: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ArgvFileHash {
+    pub index: usize,
+    pub sha256: String,
+    pub size: u64,
+    pub mtime_ns: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -75,6 +89,12 @@ pub struct PendingEntry {
 /// / `exec` call. Keeps the queue from ballooning under sweep tests or
 /// an over-eager client that keeps retrying a blocked launch.
 pub const PENDING_MAX_AGE_DAYS: i64 = 7;
+
+/// Hard cap on the pending queue. An adversarial MCP client could spam
+/// distinct fingerprints to push legitimate entries out or balloon disk
+/// usage. When the cap is hit, the oldest entries (by `last_seen` or
+/// `ts`) are evicted to make room.
+pub const PENDING_MAX_ENTRIES: usize = 10_000;
 
 pub struct Paths {
     pub root: PathBuf,
@@ -166,6 +186,16 @@ pub fn upsert_pending(paths: &Paths, mut entry: PendingEntry) -> Result<bool> {
         entry.last_seen = Some(now);
         entry.hit_count = Some(1);
         all.push(entry);
+        // Enforce hard cap. Evict oldest-by-last_seen until under cap.
+        // Cheap because we only re-sort when over cap.
+        if all.len() > PENDING_MAX_ENTRIES {
+            all.sort_by(|a, b| {
+                let a_ts = a.last_seen.unwrap_or(a.ts);
+                let b_ts = b.last_seen.unwrap_or(b.ts);
+                b_ts.cmp(&a_ts) // newest first
+            });
+            all.truncate(PENDING_MAX_ENTRIES);
+        }
         save_pending(paths, &all)?;
         Ok(true)
     }
@@ -300,6 +330,10 @@ fn canonical_entry_bytes(entry: &AllowEntry) -> Result<Vec<u8>> {
         serde_json::to_value(&entry.source_config)?,
     );
     map.insert("sandbox", serde_json::to_value(&entry.sandbox)?);
+    map.insert(
+        "argv_file_hashes",
+        serde_json::to_value(&entry.argv_file_hashes)?,
+    );
     map.insert(
         "signed_at",
         serde_json::Value::String(entry.signed_at.to_rfc3339()),

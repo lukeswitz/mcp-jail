@@ -1,6 +1,6 @@
 
 use crate::audit;
-use crate::canonical::{find_dangerous_flag, hash_file, SpawnRequest};
+use crate::canonical::{find_dangerous_flag, hash_file, hash_stat_file, validate_no_control, SpawnRequest};
 use crate::cli::{
     ApproveArgs, Command, DoctorArgs, ExecArgs, InitArgs, LogsArgs, PruneArgs, RevokeArgs,
     SentryArgs, WrapArgs,
@@ -11,8 +11,8 @@ use crate::sandbox;
 use crate::sentry;
 use crate::store::{
     self, auto_prune_pending, clear_pending_for, ensure_key, load_allow, load_pending, save_allow,
-    sign_entry, upsert_pending, verify_entry, AllowEntry, AllowList, PendingEntry, Paths, Sandbox,
-    SourceConfig,
+    sign_entry, upsert_pending, verify_entry, AllowEntry, AllowList, ArgvFileHash, PendingEntry,
+    Paths, Sandbox, SourceConfig,
 };
 use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
@@ -519,7 +519,17 @@ fn approve_wrapped(
         let Some(sandbox) = choose_sandbox(w, &argv, mode) else {
             continue;
         };
+        if validate_argv_env(&argv, "", &[]).is_err()
+            || validate_sandbox_inputs(&sandbox).is_err()
+        {
+            report.missing_manual.push(format!(
+                "{} (argv/sandbox contains control chars — refusing to auto-approve)",
+                w.id
+            ));
+            continue;
+        }
         allow.entries.retain(|e| e.id != w.id);
+        let argv_file_hashes = build_argv_file_hashes(&argv);
         let mut entry = AllowEntry {
             id: w.id.clone(),
             fingerprint,
@@ -533,6 +543,7 @@ fn approve_wrapped(
                 hash: String::new(),
             }),
             sandbox,
+            argv_file_hashes,
             signed_at: Utc::now(),
             signature: String::new(),
         };
@@ -732,6 +743,68 @@ fn cmd_init(_a: InitArgs) -> Result<()> {
     Ok(())
 }
 
+/// Reject pending / user-supplied strings that contain NUL, newlines,
+/// CR, or any control byte besides tab. Protects:
+///   * TOML serialization of allow.toml
+///   * the signed sandbox-profile literal
+///   * audit-log JSON records
+fn validate_argv_env(argv: &[String], cwd: &str, env_subset: &[String]) -> Result<()> {
+    for (i, a) in argv.iter().enumerate() {
+        validate_no_control(a, &format!("argv[{i}]"))?;
+    }
+    validate_no_control(cwd, "cwd")?;
+    for k in env_subset {
+        validate_no_control(k, "env key")?;
+    }
+    Ok(())
+}
+
+fn validate_sandbox_inputs(sb: &Sandbox) -> Result<()> {
+    for p in &sb.fs_read {
+        validate_no_control(p, "--fs-read")?;
+        crate::sandbox::validate_sb_token(p)
+            .with_context(|| format!("--fs-read {p:?}"))?;
+    }
+    for p in &sb.fs_write {
+        validate_no_control(p, "--fs-write")?;
+        crate::sandbox::validate_sb_token(p)
+            .with_context(|| format!("--fs-write {p:?}"))?;
+    }
+    for p in &sb.fs_read_secret {
+        validate_no_control(p, "--fs-read-secret")?;
+        crate::sandbox::validate_sb_token(p)
+            .with_context(|| format!("--fs-read-secret {p:?}"))?;
+    }
+    for n in &sb.net {
+        validate_no_control(n, "--net")?;
+        crate::sandbox::validate_sb_token(n)
+            .with_context(|| format!("--net {n:?}"))?;
+    }
+    Ok(())
+}
+
+/// Build argv[1..] file-hash bindings for every element that resolves to
+/// an existing regular file. Non-files are skipped (they're positional
+/// flags / non-path args). Paths are stored as-written in argv — we do
+/// NOT canonicalize them so a symlink swap is detected too (`hash_stat_file`
+/// hashes the file the path currently points at, and we compare at exec).
+fn build_argv_file_hashes(argv: &[String]) -> Vec<ArgvFileHash> {
+    let mut out = Vec::new();
+    for (i, a) in argv.iter().enumerate().skip(1) {
+        let Some((sha, size, mtime)) = crate::canonical::hash_stat_file(std::path::Path::new(a))
+        else {
+            continue;
+        };
+        out.push(ArgvFileHash {
+            index: i,
+            sha256: sha,
+            size,
+            mtime_ns: mtime.to_string(),
+        });
+    }
+    out
+}
+
 fn cmd_approve(a: ApproveArgs) -> Result<()> {
     let paths = Paths::default();
     paths.ensure()?;
@@ -791,12 +864,29 @@ fn cmd_approve(a: ApproveArgs) -> Result<()> {
         None => None,
     };
 
+    // Validate every string that will flow into TOML/JSON/sandbox-profile
+    // serialization. Reject at approve time so a malicious pending argv
+    // (newline, NUL, control byte) can never reach disk.
+    validate_argv_env(
+        &pending.request.argv,
+        &pending.request.cwd,
+        &env_subset,
+    )?;
+    let sandbox = Sandbox {
+        net: a.net,
+        fs_read: a.fs_read,
+        fs_write: a.fs_write,
+        fs_read_secret: a.fs_read_secret,
+    };
+    validate_sandbox_inputs(&sandbox)?;
+
     // Recompute the fingerprint with an EMPTY env_subset to match what
     // `evaluate()` will compute at spawn time (runtime also uses
     // entry.env_subset, which is empty here). We don't reuse the stored
     // pending.fingerprint because that one was computed via
     // `fingerprint_full` (every env key), which wouldn't match runtime.
     // `fingerprint(&[])` needs no env values — unaffected by redaction.
+    let argv_file_hashes = build_argv_file_hashes(&pending.request.argv);
     let mut entry = AllowEntry {
         id: id.clone(),
         fingerprint: pending.request.fingerprint(&env_subset),
@@ -806,12 +896,8 @@ fn cmd_approve(a: ApproveArgs) -> Result<()> {
         env_subset,
         dangerous: a.dangerous,
         source_config,
-        sandbox: Sandbox {
-            net: a.net,
-            fs_read: a.fs_read,
-            fs_write: a.fs_write,
-            fs_read_secret: a.fs_read_secret,
-        },
+        sandbox,
+        argv_file_hashes,
         signed_at: Utc::now(),
         signature: String::new(),
     };
@@ -906,14 +992,27 @@ fn cmd_approve_interactive(paths: &Paths, key: &ed25519_dalek::SigningKey) -> Re
                 deleted += 1;
             }
             _ => {
+                if let Err(e) = validate_argv_env(&p.request.argv, &p.request.cwd, &[]) {
+                    println!("   ✗ refused: {e}");
+                    skipped += 1;
+                    println!();
+                    continue;
+                }
                 let id = derive_id(&p.request.argv, &p.fingerprint);
                 let sandbox = trusted_sandbox_for(&p.request.argv);
+                if let Err(e) = validate_sandbox_inputs(&sandbox) {
+                    println!("   ✗ refused: sandbox {e}");
+                    skipped += 1;
+                    println!();
+                    continue;
+                }
                 let source_config = p.request.source_config.as_deref().and_then(|path| {
                     hash_file(std::path::Path::new(path)).map(|hash| SourceConfig {
                         path: path.to_owned(),
                         hash,
                     })
                 });
+                let argv_file_hashes = build_argv_file_hashes(&p.request.argv);
                 let mut entry = AllowEntry {
                     id: id.clone(),
                     fingerprint: p.request.fingerprint(&[]),
@@ -924,6 +1023,7 @@ fn cmd_approve_interactive(paths: &Paths, key: &ed25519_dalek::SigningKey) -> Re
                     dangerous: false,
                     source_config,
                     sandbox,
+                    argv_file_hashes,
                     signed_at: Utc::now(),
                     signature: String::new(),
                 };
@@ -1366,9 +1466,58 @@ fn evaluate<'a>(allow: &'a AllowList, req: &SpawnRequest) -> Result<&'a AllowEnt
         {
             return Err(JailError::DangerousFlag(flag).to_string());
         }
+        // Source-config binding: if the approved entry was bound to a
+        // specific config file, refuse to satisfy a spawn that claims
+        // origination from a different config (or none).
+        if let Some(bound) = &entry.source_config {
+            let req_path = req.source_config.as_deref().unwrap_or("");
+            if !source_configs_equal(&bound.path, req_path) {
+                return Err(format!(
+                    "entry `{}` is bound to source-config `{}` but spawn claims `{}`",
+                    entry.id, bound.path, req_path
+                ));
+            }
+        }
+        // argv[1..] content-hash binding: refuses a swapped script even
+        // when argv strings are unchanged.
+        for h in &entry.argv_file_hashes {
+            let Some(arg) = entry.argv.get(h.index) else { continue };
+            match hash_stat_file(std::path::Path::new(arg)) {
+                Some((actual, _size, _mtime)) => {
+                    if actual != h.sha256 {
+                        return Err(format!(
+                            "argv file changed at index {}: {} (content hash mismatch)",
+                            h.index, arg
+                        ));
+                    }
+                }
+                None => {
+                    return Err(format!(
+                        "argv file changed at index {}: {} (missing or not a regular file)",
+                        h.index, arg
+                    ));
+                }
+            }
+        }
         return Ok(entry);
     }
     Err(JailError::UnknownFingerprint(req.fingerprint_full()).to_string())
+}
+
+fn source_configs_equal(a: &str, b: &str) -> bool {
+    if a == b {
+        return true;
+    }
+    let ca = std::fs::canonicalize(a)
+        .ok()
+        .map(|p| p.display().to_string());
+    let cb = std::fs::canonicalize(b)
+        .ok()
+        .map(|p| p.display().to_string());
+    match (ca, cb) {
+        (Some(x), Some(y)) => x == y,
+        _ => false,
+    }
 }
 
 fn load_pubkey() -> Result<ed25519_dalek::VerifyingKey> {
@@ -1392,7 +1541,8 @@ fn derive_id(argv: &[String], fingerprint: &str) -> String {
                 .map(|s| s.to_string_lossy().into_owned())
                 .unwrap_or_else(|| "server".to_owned())
         });
-    format!("{}-{}", sanitize_id(&base), &fingerprint[..6])
+    let suffix = fingerprint.get(..6).unwrap_or(fingerprint);
+    format!("{}-{}", sanitize_id(&base), suffix)
 }
 
 fn sanitize_id(s: &str) -> String {
@@ -1468,18 +1618,24 @@ fn cmd_exec(a: ExecArgs) -> Result<()> {
                 },
             )?;
             if is_new {
-                crate::notify::blocked_spawn(&argv, &fp);
+                crate::notify::blocked_spawn_log(&argv, &fp);
             }
 
+            let mut modal_rendered = false;
             if !dangerous {
                 match crate::prompt::ask(&argv, a.source_config.as_deref()) {
                     crate::prompt::Decision::Approve => {
                         return approve_and_exec(&paths, &req, &a);
                     }
                     crate::prompt::Decision::Deny
-                    | crate::prompt::Decision::Timeout
-                    | crate::prompt::Decision::NoGui => {}
+                    | crate::prompt::Decision::Timeout => {
+                        modal_rendered = true;
+                    }
+                    crate::prompt::Decision::NoGui => {}
                 }
+            }
+            if is_new && !modal_rendered {
+                crate::notify::blocked_spawn_notify(&argv, &fp);
             }
 
             audit::append(
@@ -1502,6 +1658,11 @@ fn cmd_exec(a: ExecArgs) -> Result<()> {
             eprintln!("  command:     {}", argv.join(" "));
             eprintln!("  source:      {src}");
             eprintln!("  fingerprint: {fp12}");
+            // Emit the reason verbatim; it contains the full 64-char
+            // fingerprint so the test harness (and anyone scripting
+            // against mcp-jail) has a stable, parseable tag:
+            //   `unknown fingerprint <64 hex>`
+            eprintln!("  reason:      {reason}");
             eprintln!();
             if dangerous {
                 eprintln!("Argv uses an interpreter-eval flag (`-c`, `-e`, `/c`).");
@@ -1526,9 +1687,11 @@ fn approve_and_exec(
     a: &ExecArgs,
 ) -> Result<()> {
     let key = ensure_key(paths)?;
+    validate_argv_env(&req.argv, &req.cwd, &[])?;
     let fp = req.fingerprint(&[]);
     let id = a.id.clone().unwrap_or_else(|| derive_id(&req.argv, &fp));
     let sandbox = trusted_sandbox_for(&req.argv);
+    validate_sandbox_inputs(&sandbox)?;
     let source_config = a
         .source_config
         .clone()
@@ -1537,6 +1700,7 @@ fn approve_and_exec(
             path: p,
             hash: String::new(),
         });
+    let argv_file_hashes = build_argv_file_hashes(&req.argv);
     let mut entry = AllowEntry {
         id,
         fingerprint: fp,
@@ -1547,6 +1711,7 @@ fn approve_and_exec(
         dangerous: false,
         source_config,
         sandbox,
+        argv_file_hashes,
         signed_at: Utc::now(),
         signature: String::new(),
     };
@@ -1600,9 +1765,13 @@ fn exec_or_die(wrapped: &[String], env_subset: &[String]) -> Result<()> {
         let mut out = Vec::new();
         let declared: std::collections::HashSet<&str> =
             env_subset.iter().map(String::as_str).collect();
+        // Only truly pass-through env vars. SSH_AUTH_SOCK / DISPLAY /
+        // XAUTHORITY used to live here but leaked a user's SSH agent and
+        // X authority handle into every MCP server. An operator who
+        // actually wants those has to approve them explicitly via
+        // `--env SSH_AUTH_SOCK` (etc.) on `mcp-jail approve`.
         let essentials = [
             "PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "SHELL", "LANG", "LC_ALL",
-            "SSH_AUTH_SOCK", "DISPLAY", "XAUTHORITY",
         ];
         for (k, v) in std::env::vars() {
             if declared.contains(k.as_str()) || essentials.contains(&k.as_str()) {
@@ -1647,7 +1816,6 @@ fn exec_or_die(wrapped: &[String], env_subset: &[String]) -> Result<()> {
     let declared: HashSet<&str> = env_subset.iter().map(String::as_str).collect();
     let essentials = [
         "PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "SHELL", "LANG", "LC_ALL",
-        "SSH_AUTH_SOCK", "DISPLAY", "XAUTHORITY",
         "USERPROFILE", "APPDATA", "LOCALAPPDATA", "SYSTEMROOT", "TEMP", "TMP",
     ];
     let mut cmd = std::process::Command::new(&wrapped[0]);

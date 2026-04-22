@@ -61,6 +61,18 @@ pub fn verify_chain(path: &Path) -> Result<bool> {
         if r.prev_hash != prev {
             return Ok(false);
         }
+        // Recompute the record's SHA256 exactly as append() does:
+        // serialize the record with this_hash cleared, append b"chain",
+        // digest. If the stored this_hash doesn't match, the record
+        // body was mutated even though linkage looks intact.
+        let mut recomputed = r.clone();
+        recomputed.this_hash = String::new();
+        let mut digest_input = serde_json::to_vec(&recomputed)?;
+        digest_input.extend_from_slice(b"chain");
+        let want = hex::encode(Sha256::digest(&digest_input));
+        if want != r.this_hash {
+            return Ok(false);
+        }
         prev = r.this_hash.clone();
     }
     Ok(true)

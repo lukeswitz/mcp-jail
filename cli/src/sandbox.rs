@@ -12,7 +12,11 @@ pub fn write_profile(root: &Path, entry: &AllowEntry) -> Result<PathBuf> {
     std::fs::create_dir_all(profile_dir(root))?;
     let path = profile_dir(root).join(format!("{}.sb", entry.id));
     if cfg!(target_os = "macos") {
-        std::fs::write(&path, macos_profile(&entry.sandbox))?;
+        // Reject entries whose sandbox scope contains characters that
+        // would break out of a profile literal. This is the last line of
+        // defence; approve-time validation (see cmd_approve) also rejects.
+        let profile = macos_profile_checked(&entry.sandbox)?;
+        std::fs::write(&path, profile)?;
     } else if cfg!(target_os = "linux") {
         std::fs::write(&path, "# bwrap args live in allow entry\n")?;
     }
@@ -67,6 +71,27 @@ pub fn wrap_argv(_profile: &Path, command: &str, argv: &[String]) -> Result<Vec<
     Ok(out)
 }
 
+/// Build the macOS sandbox profile, failing if any operator-controlled
+/// token (`fs_read`, `fs_write`, `fs_read_secret`, `net`) contains
+/// control bytes, newlines, or parens. Those would let an attacker who
+/// smuggled a crafted string into an approval break out of the profile
+/// literal with `"\n(allow network* ...)`.
+pub fn macos_profile_checked(scope: &Sandbox) -> Result<String> {
+    for p in &scope.fs_read {
+        validate_sb_token(p)?;
+    }
+    for p in &scope.fs_write {
+        validate_sb_token(p)?;
+    }
+    for p in &scope.fs_read_secret {
+        validate_sb_token(p)?;
+    }
+    for p in &scope.net {
+        validate_sb_token(p)?;
+    }
+    Ok(macos_profile(scope))
+}
+
 #[must_use]
 pub fn macos_profile(scope: &Sandbox) -> String {
     let mut s = String::new();
@@ -78,10 +103,16 @@ pub fn macos_profile(scope: &Sandbox) -> String {
     s.push_str("(allow file-write* (subpath \"/dev\"))\n");
     s.push_str("(allow file-write-data file-read-data (literal \"/dev/null\") (literal \"/dev/zero\") (literal \"/dev/random\") (literal \"/dev/urandom\") (literal \"/dev/tty\") (literal \"/dev/dtracehelper\"))\n");
 
+    // validate_sb_token should have been called first (see macos_profile_checked);
+    // if the caller skipped it, a malformed token would still be rejected here
+    // via escape_sb losing nothing, because validate_sb_token is also called
+    // at approve time by sanitize_sandbox() in commands.rs.
     for p in &scope.fs_read {
+        if validate_sb_token(p).is_err() { continue; }
         s.push_str(&format!("(allow file-read* (subpath \"{}\"))\n", escape_sb(p)));
     }
     for p in &scope.fs_write {
+        if validate_sb_token(p).is_err() { continue; }
         s.push_str(&format!(
             "(allow file-write* (subpath \"{}\"))\n",
             escape_sb(p),
@@ -121,6 +152,7 @@ pub fn macos_profile(scope: &Sandbox) -> String {
     }
 
     for p in &scope.fs_read_secret {
+        if validate_sb_token(p).is_err() { continue; }
         s.push_str(&format!("(allow file-read* (literal \"{}\"))\n", escape_sb(p)));
         s.push_str(&format!(
             "(allow file-read-metadata (subpath \"{}\"))\n",
@@ -152,7 +184,44 @@ fn is_loopback(s: &str) -> bool {
     }
 }
 
+/// Validate a path/host string intended for inclusion inside a sandbox
+/// profile literal. Rejects any character that would allow breaking out
+/// of the double-quoted token: newlines, CR, tab, NUL, parentheses, and
+/// all other control / non-printable bytes. Backslash and double-quote
+/// are still allowed but escaped.
+pub fn validate_sb_token(s: &str) -> Result<()> {
+    for b in s.as_bytes() {
+        match *b {
+            // printable ASCII except the two we actively escape is fine
+            0x20..=0x7e => {
+                if *b == b'(' || *b == b')' {
+                    return Err(anyhow!(
+                        "sandbox token contains forbidden character `{}`",
+                        *b as char
+                    ));
+                }
+            }
+            // UTF-8 continuation bytes are OK (multi-byte chars are fine
+            // inside a literal)
+            0x80..=0xff => {}
+            // Everything else (control chars, NUL, newline, CR, tab, …)
+            // is rejected.
+            _ => {
+                return Err(anyhow!(
+                    "sandbox token contains forbidden control byte 0x{:02x}",
+                    b
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn escape_sb(s: &str) -> String {
+    // Escaping is only safe once validate_sb_token has succeeded. Any
+    // caller that forgets to validate still cannot inject newlines or
+    // parens because validate_sb_token rejects them outright — but we
+    // still escape `\` and `"` here for defence in depth.
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
