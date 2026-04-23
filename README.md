@@ -31,11 +31,24 @@ You don't normally need the CLI. It's there if you want it.
 
 ## Uninstall
 
+Full removal (binary, sentry watchdog, state dir, client configs restored):
+
 ```bash
-mcp-jail unwrap     # restore your original configs
+curl -fsSL https://raw.githubusercontent.com/lukeswitz/mcp-jail/main/uninstall.sh | bash
 ```
 
-Or delete the binary and reinstall later — your configs are backed up.
+Flags: `--dry-run` to preview, `--yes` to skip the confirm prompt, `--keep-state` to leave `~/.mcp-jail/` in place for a future reinstall.
+
+Or step-by-step if you prefer:
+
+```bash
+mcp-jail unwrap             # restore your original MCP client configs
+mcp-jail sentry uninstall   # remove the launchd/systemd watchdog
+rm -rf ~/.mcp-jail          # drop signing key, allow-list, audit log
+sudo rm -f /usr/local/bin/mcp-jail   # or wherever it landed
+```
+
+Your client configs are backed up either way — reinstalling later picks up where you left off.
 
 ## Platforms
 
