@@ -4,13 +4,13 @@
 
 [![ci](https://github.com/lukeswitz/mcp-jail/actions/workflows/ci.yml/badge.svg)](https://github.com/lukeswitz/mcp-jail/actions/workflows/ci.yml) [![release](https://github.com/lukeswitz/mcp-jail/actions/workflows/release.yml/badge.svg)](https://github.com/lukeswitz/mcp-jail/actions/workflows/release.yml) [![Pre-release](https://img.shields.io/github/v/release/lukeswitz/mcp-jail?include_prereleases&label=pre-release&color=orange)](https://github.com/lukeswitz/mcp-jail/releases) [![CodeQL](https://github.com/lukeswitz/mcp-jail/actions/workflows/github-code-scanning/codeql/badge.svg)](https://github.com/lukeswitz/mcp-jail/actions/workflows/github-code-scanning/codeql)
 
-**Stops MCP servers from running commands they shouldn't.**
+**MCP sandbox to minimize attack surface.**
 
 </div>
 
-Your MCP client (Claude Code, Claude Desktop, Cursor, Windsurf, Gemini CLI, Copilot…) trusts whatever is in its config file. A poisoned config — from a prompt injection, a shady marketplace entry, or a vulnerable web app — gets arbitrary code execution on your machine. Anthropic called it "expected behavior" and won't patch it.
+Your MCP clients (Claude Code, Claude Desktop, Cursor, Windsurf, Gemini CLI, Copilot…) trusts whatever is in its config file. A poisoned config — from a prompt injection, a shady marketplace entry, or a vulnerable web app — gets arbitrary code execution on your machine. **Anthropic called it "expected behavior" and won't patch it.**
 
-mcp-jail sits in front of every MCP server and only lets through the ones you've approved. Servers run inside a small OS sandbox so even approved ones can't wander off into your SSH keys or AWS credentials.
+mcp-jail sits in front of every MCP server and only lets through the ones you've approved. Servers run inside a small OS sandbox so even approved ones can't wander off into your SSH keys and othet spots they dont belong.
 
 ## Install
 
@@ -27,7 +27,26 @@ That's it. The installer scans your existing MCP clients, asks once before makin
 - **Headless / no GUI** (SSH, server, notifications off): approval fails closed. `mcp-jail` writes an actionable message to the MCP client's log telling you exactly what to type in a terminal.
 - **Something breaks** (mcp-jail gets deleted, signatures don't match, config tampered): the background watchdog pops a notification with the fix. No silent failures.
 
-You don't normally need the CLI. It's there if you want it.
+
+
+<details>
+<summary><b>CLI reference</b></summary>
+
+You don't normally need the CLI, but it's there if needed:
+  
+```
+mcp-jail approve              walk pending blocked servers, one at a time
+mcp-jail list                 show approved + pending
+mcp-jail revoke <id>          drop an approval
+mcp-jail doctor               health check
+mcp-jail status               one-liner for shell prompts
+mcp-jail logs                 audit log (every allow/deny)
+mcp-jail wrap                 re-scan configs (new MCP client installed?)
+mcp-jail unwrap               restore original configs
+mcp-jail upgrade              upgrade in place
+mcp-jail sentry <cmd>         manage the background watchdog
+```
+
 
 ## Uninstall
 
@@ -87,21 +106,6 @@ Every MCP server is identified by a SHA-256 of its exact command line. mcp-jail 
 
 </details>
 
-<details>
-<summary><b>CLI reference</b> — if you want it</summary>
-
-```
-mcp-jail approve              walk pending blocked servers, one at a time
-mcp-jail list                 show approved + pending
-mcp-jail revoke <id>          drop an approval
-mcp-jail doctor               health check
-mcp-jail status               one-liner for shell prompts
-mcp-jail logs                 audit log (every allow/deny)
-mcp-jail wrap                 re-scan configs (new MCP client installed?)
-mcp-jail unwrap               restore original configs
-mcp-jail upgrade              upgrade in place
-mcp-jail sentry <cmd>         manage the background watchdog
-```
 
 The installer runs the right things for you. `mcp-jail approve` is the one you'll actually use.
 
